@@ -10,7 +10,7 @@ from fortress_agent.game_rules.economy import (
     sellable_amount, weapon_count, primary_builder_id,
     wall_construction_due, stone_batch_target,
     near_night_mineral_return_due, in_mining_emergency_window,
-    wall_fixer_target, wall_rebuild_target,
+    wall_fixer_target, wall_rebuild_target, vendor_trip_due,
 )
 from fortress_agent.game_rules.tasks import task_zone_positions_for_task
 from fortress_agent.game_rules.catalog import KNOWN_WEAPON_SHOP_PRICES
@@ -205,16 +205,24 @@ class VendorApproachCandidateGenerator(CandidateGenerator):
         if not vendors:
             return ()
         traversability = TraversabilityMap.from_state_and_memory(ctx.state, ctx.world_memory, ctx.feedback_memory)
-        access = tuple(sorted({cell for vendor in vendors for cell in traversability.interaction_access_cells(vendor)}, key=lambda p:(p.x,p.y)))
         actions = []
         for actor in ctx.state.characters:
+            if not vendor_trip_due(ctx, actor):
+                continue
             sellable = sum(sellable_amount(ctx.state, actor, name) for name in ctx.state.market_prices)
             if sellable <= 0 or any(is_adjacent8(actor.position, vendor) for vendor in vendors):
                 continue
-            step = _path_step(ctx, actor, access)
+            committed = ctx.mining_memory.vendor_target(actor.actor_id) if ctx.mining_memory else None
+            ordered = sorted(vendors, key=lambda p: (
+                (p.x, p.y) != committed, chebyshev_distance(p, actor.position), p.x, p.y,
+            ))
+            step = None
+            for nearest in ordered:
+                step = _path_step(ctx, actor, traversability.interaction_access_cells(nearest))
+                if step is not None:
+                    break
             if step is None:
                 continue
-            nearest = min(vendors, key=lambda p: chebyshev_distance(p, actor.position))
             actions.append(GoalApproachAction(
                 actor_id=actor.actor_id, action_type="move", x=step.x, y=step.y,
                 goal_kind="vendor", goal_id="vendor", goal_x=nearest.x, goal_y=nearest.y,

@@ -51,6 +51,7 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
     6. Station -> L3
     7. top/bottom walls -> L2
     8. top/bottom walls -> L3
+    9. legacy rear-side walls -> L2, then L3
     """
     weapons = _own(state, set(WEAPON_TYPES))
     station = _own(state, {"station"})
@@ -67,7 +68,9 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
 
     front_cells = _front_wall_cells(state)
     front_walls = [b for b in walls if (b.position.x, b.position.y) in front_cells]
-    other_walls = [b for b in walls if (b.position.x, b.position.y) not in front_cells]
+    blueprint = wall_blueprint_cells(state)
+    other_walls = [b for b in walls if (b.position.x, b.position.y) in blueprint - front_cells]
+    rear_walls = [b for b in walls if (b.position.x, b.position.y) not in blueprint]
 
     target = _first_level(front_walls, 1)
     if target is not None:
@@ -94,4 +97,8 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
     target = _first_level(other_walls, 2)
     if target is not None:
         return UpgradeTarget("WallUpgradeVoucher2", str(target.building_id), target.position, "other_walls_to_3")
+    for level in (1, 2):
+        target = _first_level(rear_walls, level)
+        if target is not None:
+            return UpgradeTarget(f"WallUpgradeVoucher{level}", str(target.building_id), target.position, f"rear_walls_to_{level + 1}")
     return None

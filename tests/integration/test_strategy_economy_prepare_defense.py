@@ -4,6 +4,8 @@ import json
 import pytest
 
 from fortress_agent.application.bootstrap import build_runtime
+from fortress_agent.game_rules.build_area import rocket_cluster_plan
+from fortress_agent.protocol.codec import GameProtocolCodec
 
 
 def base_payload(round_no: int, *, roles, zones=None, tasks=None, robots=None, gold=75):
@@ -110,7 +112,7 @@ def test_prepare_worker_far_from_base_moves_toward_base_ring():
     assert after < before
 
 
-def test_night_without_weapon_uses_safe_reposition_instead_of_empty_team_response():
+def test_night_without_work_holds_instead_of_inventing_random_reposition():
     runtime = build_runtime()
     payload = base_payload(
         71,
@@ -123,10 +125,8 @@ def test_night_without_weapon_uses_safe_reposition_instead_of_empty_team_respons
     result = asyncio.run(runtime.handle_turn(payload))
     assert result.ok
     response = json.loads(result.response_json)
-    # V0.5.3: defense must not silently idle for an entire night. Without a
-    # weapon, roles use verified traversable repositioning toward the base.
-    assert response["roleCommandMap"]
-    assert all(command["action"] == "move" for command in response["roleCommandMap"].values())
+    assert response["roleCommandMap"] == {}
+    assert result.error_code == "safety_hold"
 
 
 def test_night_with_weapon_and_target_generates_attack():
@@ -211,15 +211,21 @@ def test_opening_fills_empty_slots_with_rockets_before_using_upgrade_voucher(exi
     payload = base_payload(10, gold=25, roles=[
         character(10010, 7, 21, "worker", ["WeaponUpgradeVoucher1", "stone"]),
         building(10013, 9, 22, "station"),
-        *[building(10040 + i, 8, 22 - i, name) for i, name in enumerate(existing)],
     ])
+    plan = rocket_cluster_plan(GameProtocolCodec().parse_state(payload).value)
+    payload["teamOur"]["roles"][0]["pos"] = {"x": plan.controller[0], "y": plan.controller[1]}
+    occupied = plan.rocket_cells[:len(existing)]
+    payload["teamOur"]["roles"].extend(
+        building(10040 + i, *cell, name) for i, (cell, name) in enumerate(zip(occupied, existing))
+    )
     result = asyncio.run(build_runtime().handle_turn(payload))
     assert result.ok
     command = json.loads(result.response_json)["roleCommandMap"]["10010"]
     assert command["action"] == "build"
     assert command["name"] == "rocket"
     target = command["targetPos"][0]
-    assert (target["x"], target["y"]) not in {(8, 22 - i) for i in range(len(existing))}
+    assert (target["x"], target["y"]) not in occupied
+    assert (target["x"], target["y"]) != plan.controller
 
 
 @pytest.mark.parametrize("base_x,base_y,wall_x", [(9, 22, 12), (30, 8, 28)])
@@ -237,3 +243,52 @@ def test_front_wall_voucher_used_before_station_and_other_walls(base_x, base_y, 
     assert command["action"] == "use"
     assert command["name"] == "WallUpgradeVoucher1"
     assert command["targetPos"] == [{"x": wall_x, "y": base_y}]
+
+
+def test_worker_finishes_vendor_trip_and_partial_sales_across_real_turns():
+    runtime = build_runtime()
+    x, y = 5, 5
+    backpack = ["iron"] * 4 + ["copper"]
+    sold = []
+    for round_no in range(10, 20):
+        payload = base_payload(round_no, gold=0,
+            roles=[character(10010, x, y, "worker", backpack)],
+            zones=[{"neutralType": "vendor", "pos": {"x": 1, "y": 5}},
+                   {"neutralType": "iron", "pos": {"x": 6, "y": 5}}])
+        payload["vendorShopList"] = [{"name": "iron", "price": 3}, {"name": "copper", "price": 5}]
+        payload["lastRoundRoleActionResults"] = {"10010": True} if round_no > 10 else {}
+        result = asyncio.run(runtime.handle_turn(payload))
+        assert result.ok
+        command = json.loads(result.response_json)["roleCommandMap"]["10010"]
+        if command["action"] == "move":
+            target = command["targetPos"][0]
+            old_distance = max(abs(x - 1), abs(y - 5))
+            x, y = target["x"], target["y"]
+            assert max(abs(x - 1), abs(y - 5)) < old_distance
+        else:
+            assert command["action"] == "sell"
+            sold.append(command["name"])
+            backpack = [item for item in backpack if item != command["name"]]
+            if not backpack:
+                break
+    assert set(sold) == {"iron", "copper"}
+    assert not backpack
+
+
+def test_worker_mines_at_night_then_retreats_when_robot_approaches():
+    runtime = build_runtime()
+    payload = base_payload(71, gold=0, roles=[character(10010, 2, 2, "worker")],
+        zones=[{"neutralType": "iron", "pos": {"x": 3, "y": 2}}],
+        robots=[{**building(20000, 20, 16, "smallrobot", attack=5, attack_range=3), "health": 40}])
+    first = asyncio.run(runtime.handle_turn(payload))
+    assert first.ok
+    assert json.loads(first.response_json)["roleCommandMap"]["10010"]["action"] == "collect"
+    payload["roundNo"] = 72
+    payload["robot"]["roles"][0]["pos"] = {"x": 7, "y": 2}
+    payload["lastRoundRoleActionResults"] = {"10010": True}
+    second = asyncio.run(runtime.handle_turn(payload))
+    assert second.ok
+    command = json.loads(second.response_json)["roleCommandMap"]["10010"]
+    assert command["action"] == "move"
+    target = command["targetPos"][0]
+    assert max(abs(target["x"] - 7), abs(target["y"] - 2)) > 5

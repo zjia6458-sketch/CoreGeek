@@ -96,6 +96,24 @@ def nonstone_cash_out_due(state, actor, policy_state) -> bool:
     return amount >= batch or backpack_high_watermark_reached(actor, policy_state)
 
 
+def vendor_trip_due(ctx, actor) -> bool:
+    """One shared mining -> selling transition, retained until cargo is sold."""
+    if ctx.state.phase != "day" or not any(z.zone_type == "vendor" for z in ctx.state.neutral_zones):
+        return False
+    if not any(sellable_amount(ctx.state, actor, name) > 0 for name in ctx.state.market_prices):
+        return False
+    if actor.role != "worker":
+        return True
+    if ctx.mining_memory is not None and ctx.mining_memory.vendor_target(actor.actor_id) is not None:
+        return True
+    return (
+        nonstone_cash_out_due(ctx.state, actor, ctx.policy_state)
+        or backpack_high_watermark_reached(actor, ctx.policy_state)
+        or near_night_mineral_return_due(ctx.state, actor, ctx.policy_state)
+        or not ctx.world_memory.available_resources()
+    )
+
+
 def day_elapsed_rounds(state) -> int:
     if state.phase != "day":
         return DAY_TURNS
@@ -282,12 +300,14 @@ def should_hold_current_mine(ctx, actor) -> bool:
     resources = adjacent_available_resources(ctx, actor)
     if not resources:
         return False
+    committed = ctx.mining_memory.committed_resource(actor.actor_id) if ctx.mining_memory else None
+    current = ctx.world_memory.resource(committed) if committed is not None else None
+    if current is not None and current in ctx.world_memory.available_resources():
+        if not is_adjacent8(actor.position, (current.x, current.y)):
+            return False
     if actor.backpack_capacity and backpack_used(actor) >= actor.backpack_capacity:
         return False
-    if (
-        nonstone_cash_out_due(ctx.state, actor, ctx.policy_state)
-        and any(zone.zone_type == "vendor" for zone in ctx.state.neutral_zones)
-    ):
+    if vendor_trip_due(ctx, actor):
         return False
     if near_night_mineral_return_due(ctx.state, actor, ctx.policy_state):
         return False

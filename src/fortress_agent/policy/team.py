@@ -6,6 +6,7 @@ from fortress_agent.domain.decision import Decision
 from fortress_agent.domain.auxiliary import AuxiliaryDecision
 from fortress_agent.domain.team import TeamDecision
 from fortress_agent.policy.context import PolicyContext
+from fortress_agent.policy.worker_priority import worker_action_priority
 from fortress_agent.policy.team_constraints import (
     TeamConstraintRegistry,
     build_default_team_constraints,
@@ -175,7 +176,7 @@ class TeamPlanner:
                 break
             entries = []
             for action, utility in self._ranker.rank_all(ctx, tuple(actions), strategy):
-                if utility.total < minimum_utility:
+                if utility.total < minimum_utility and worker_action_priority(ctx, action) <= 0:
                     continue
                 entries.append(Decision(
                     action=action,
@@ -226,4 +227,3 @@ class TeamPlanner:
         if last_resolution is not None:
             return last_resolution.team_decision
         return TeamDecision(decisions=(), auxiliary_decisions=auxiliary_decisions, prompt=prompt, execute_cmd=execute_cmd)
-

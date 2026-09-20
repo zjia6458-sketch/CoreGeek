@@ -4,12 +4,13 @@ from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
 
-from fortress_agent.domain.state import GameState
+from fortress_agent.domain.state import GameState, Position
 from fortress_agent.game_rules.catalog import WEAPON_TYPES, building_rule, weapon_attack_range
 from fortress_agent.game_rules.build_area import BuildAreaPolicy, DEFAULT_BUILD_AREA_POLICY
 from fortress_agent.game_rules.geometry import angle_within_90, chebyshev_distance, is_adjacent8
 from fortress_agent.game_rules.tasks import available_task_zone_positions, active_task_anchor_positions
 from fortress_agent.world.traversability import TraversabilityMap
+from fortress_agent.world.safe_pathfinding import RobotThreatConfig, RobotThreatField
 
 from .server_outbound import (
     AcceptTaskRoleCommand,
@@ -50,8 +51,8 @@ class FinalValidationResult:
 class FinalResponseValidator:
     """Last state-aware safety gate before serialization.
 
-    It hard-rejects only constraints confirmed by the supplied official game
-    rules. Ordinary execution failures such as movement collisions are not
+    It enforces confirmed protocol constraints plus the conservative worker
+    night-safety doctrine. Ordinary execution failures such as collisions are not
     treated as response-format anomalies, but obvious known blockers and
     self-conflicts are still suppressed to avoid wasting turns.
     """
@@ -136,6 +137,10 @@ class FinalResponseValidator:
             traversability = self._traversability(state, world_memory, feedback_memory)
             if not traversability.is_walkable(target.x, target.y):
                 return FinalValidationIssue("move_target_blocked", f"move target is a known blocker: {traversability.block_reason(target.x, target.y)}", role_id)
+            if state.phase == "night" and actor.role == "worker":
+                threat = RobotThreatField(state, None, RobotThreatConfig())
+                if max(threat.risk(Position(target.x, target.y), eta) for eta in (0, 1)) >= 1.0:
+                    return FinalValidationIssue("unsafe_night_worker_move", "worker move enters observed/predicted robot attack zone", role_id)
             # TaskPoint exit is legal and intentionally permitted. The server ends
             # the active self-evolution task as a gameplay consequence; this is
             # not a malformed instruction and therefore must not be blocked by
@@ -229,6 +234,10 @@ class FinalResponseValidator:
                 return FinalValidationIssue("collect_target_not_resource", "collect target must be a current resource zone", role_id)
             if not is_adjacent8(actor.position, (target.x, target.y)):
                 return FinalValidationIssue("collect_target_not_adjacent", "worker must stand within one cell of the resource", role_id)
+            if state.phase == "night":
+                threat = RobotThreatField(state, None, RobotThreatConfig())
+                if not threat.safe_for_window(actor.position, start_eta=0, rounds=1, max_risk=0.35):
+                    return FinalValidationIssue("unsafe_night_collect", "worker cannot safely remain for collection", role_id)
 
         elif isinstance(command, AcceptTaskRoleCommand):
             if actor is None or actor.role != "pioneer":

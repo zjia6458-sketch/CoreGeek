@@ -8,9 +8,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from fortress_agent.domain.state import Position
-from fortress_agent.world.safe_pathfinding import RobotThreatConfig, RobotThreatField, SafePathPlanner
-from fortress_agent.world.traversability import TraversabilityMap
+from fortress_agent.game_rules.geometry import is_adjacent8
 from fortress_agent.world.pathfinding import NavigationPolicy, PathResult
+from fortress_agent.world.safe_pathfinding import (
+    RobotThreatConfig,
+    RobotThreatField,
+    SafePathPlanner,
+)
+from fortress_agent.world.traversability import TraversabilityMap
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,22 +56,41 @@ def is_edge_resource(ctx, resource) -> bool:
     return edge_distance <= margin
 
 
-def _edge_sanctuary_cells(ctx, traversability: TraversabilityMap, field: RobotThreatField, *, eta: int) -> tuple[Position, ...]:
+def _edge_sanctuary_cells(ctx, traversability: TraversabilityMap, *, origin: Position) -> tuple[Position, ...]:
     margin = max(1, int(_threshold(ctx, "night_edge_mining_margin_cells", 5.0)))
-    max_risk = _parameter(ctx, "night_escape_max_risk", 0.45)
     cells: list[Position] = []
     for y in range(ctx.state.map_height):
         for x in range(ctx.state.map_width):
             if min(x, y, ctx.state.map_width - 1 - x, ctx.state.map_height - 1 - y) > margin:
                 continue
-            if not traversability.is_walkable(x, y):
+            if not traversability.is_walkable(x, y) and Position(x, y) != origin:
                 continue
             pos = Position(x, y)
-            if field.risk(pos, eta) <= max_risk:
-                cells.append(pos)
-    # Keep target set bounded and deterministic; corners / closest outer cells are enough
-    # for escape feasibility while avoiding a huge heuristic set.
-    return tuple(sorted(cells, key=lambda p: (p.x, p.y))[:256])
+            cells.append(pos)
+    # Check safety at actual arrival, not at departure. Keep both map sides.
+    return tuple(cells)
+
+
+def _planner(ctx, field):
+    return SafePathPlanner(
+        width=ctx.state.map_width, height=ctx.state.map_height, threat=field,
+        threat_weight=_parameter(ctx, "night_threat_path_weight", 6.0),
+        hard_risk_threshold=min(1.0, _parameter(ctx, "night_hard_risk_threshold", 1.0)),
+        max_steps=int(_threshold(ctx, "night_safe_path_max_steps", 64.0)),
+    )
+
+
+def _escape_path(ctx, origin, traversability, field, *, start_eta=0):
+    hold = max(1, int(_threshold(ctx, "night_resource_min_safe_hold_rounds", 3.0)))
+    max_risk = _parameter(ctx, "night_escape_max_risk", 0.45)
+    return _planner(ctx, field).find_path_to_any(
+        ctx.world_memory, origin,
+        _edge_sanctuary_cells(ctx, traversability, origin=origin),
+        traversability=traversability, deadline=ctx.deadline, start_eta=start_eta,
+        goal_is_safe=lambda pos, eta: field.safe_for_window(
+            pos, start_eta=eta, rounds=hold, max_risk=max_risk,
+        ),
+    )
 
 
 def night_resource_route(ctx, actor, resource) -> NightResourceRoute | None:
@@ -80,18 +104,26 @@ def night_resource_route(ctx, actor, resource) -> NightResourceRoute | None:
         ctx.state, ctx.world_memory, ctx.feedback_memory
     )
     access = traversability.resource_access_cells(resource)
+    if is_adjacent8(actor.position, (resource.x, resource.y)):
+        access = (*access, actor.position)
     if not access:
         return None
 
     field = threat_field(ctx)
-    planner = SafePathPlanner(
-        width=ctx.state.map_width,
-        height=ctx.state.map_height,
-        threat=field,
-        threat_weight=_parameter(ctx, "night_threat_path_weight", 6.0),
-        hard_risk_threshold=_parameter(ctx, "night_hard_risk_threshold", 1.0),
-        max_steps=int(_threshold(ctx, "night_safe_path_max_steps", 64.0)),
-    )
+    planner = _planner(ctx, field)
+    max_resource_risk = _parameter(ctx, "night_resource_max_risk", 0.35)
+    hold = max(1, int(_threshold(ctx, "night_resource_min_safe_hold_rounds", 3.0)))
+    escapes = {}
+
+    def viable_mine(pos, eta):
+        if not field.safe_for_window(pos, start_eta=eta, rounds=hold, max_risk=max_resource_risk):
+            return False
+        escape = _escape_path(ctx, pos, traversability, field, start_eta=eta + hold)
+        if not escape.found:
+            return False
+        escapes[(pos, eta)] = escape
+        return True
+
     path = planner.find_path_to_any(
         ctx.world_memory,
         actor.position,
@@ -99,34 +131,14 @@ def night_resource_route(ctx, actor, resource) -> NightResourceRoute | None:
         traversability=traversability,
         policy=NavigationPolicy.ALLOW_UNKNOWN,
         deadline=ctx.deadline,
+        goal_is_safe=viable_mine,
     )
     if not path.found:
         return None
     arrival = path.path[-1]
     eta = max(0, path.steps)
-    max_resource_risk = _parameter(ctx, "night_resource_max_risk", 0.35)
     arrival_risk = field.risk(arrival, eta)
-    if arrival_risk > max_resource_risk:
-        return None
-    hold = max(0, int(_threshold(ctx, "night_resource_min_safe_hold_rounds", 3.0)))
-    if not field.safe_for_window(arrival, start_eta=eta, rounds=hold, max_risk=max_resource_risk):
-        return None
-
-    escape_start_eta = eta + hold
-    sanctuary = _edge_sanctuary_cells(ctx, traversability, field, eta=escape_start_eta)
-    if not sanctuary:
-        return None
-    escape = planner.find_path_to_any(
-        ctx.world_memory,
-        arrival,
-        sanctuary,
-        traversability=traversability,
-        policy=NavigationPolicy.ALLOW_UNKNOWN,
-        deadline=ctx.deadline,
-        start_eta=escape_start_eta,
-    )
-    if not escape.found:
-        return None
+    escape = escapes[(arrival, eta)]
 
     # 0..1-ish score for ranking among already-safe routes.
     safety_score = max(0.0, 1.0 - max(arrival_risk, _parameter(ctx, "night_escape_max_risk", 0.45) * 0.25))
@@ -144,32 +156,17 @@ def night_gather_is_safe(ctx, actor, resource) -> bool:
     """Check one stationary collect turn plus post-collect escape feasibility."""
     if ctx.state.phase.lower() != "night":
         return True
+    if actor.hp <= 0 or (actor.max_hp and actor.hp / actor.max_hp < _threshold(ctx, "night_worker_min_hp_ratio", 0.55)):
+        return False
     field = threat_field(ctx)
     max_resource_risk = _parameter(ctx, "night_resource_max_risk", 0.35)
-    if field.risk(actor.position, 1) > max_resource_risk:
+    hold = max(1, int(_threshold(ctx, "night_resource_min_safe_hold_rounds", 3.0)))
+    if not field.safe_for_window(actor.position, start_eta=0, rounds=hold, max_risk=max_resource_risk):
         return False
     traversability = TraversabilityMap.from_state_and_memory(
         ctx.state, ctx.world_memory, ctx.feedback_memory
     )
-    sanctuary = _edge_sanctuary_cells(ctx, traversability, field, eta=1)
-    if not sanctuary:
-        return False
-    planner = SafePathPlanner(
-        width=ctx.state.map_width,
-        height=ctx.state.map_height,
-        threat=field,
-        threat_weight=_parameter(ctx, "night_threat_path_weight", 6.0),
-        hard_risk_threshold=_parameter(ctx, "night_hard_risk_threshold", 1.0),
-        max_steps=int(_threshold(ctx, "night_safe_path_max_steps", 64.0)),
-    )
-    escape = planner.find_path_to_any(
-        ctx.world_memory,
-        actor.position,
-        sanctuary,
-        traversability=traversability,
-        deadline=ctx.deadline,
-        start_eta=1,
-    )
+    escape = _escape_path(ctx, actor.position, traversability, field, start_eta=1)
     return escape.found
 
 
@@ -181,24 +178,11 @@ def night_retreat_step(ctx, actor) -> Position | None:
         ctx.state, ctx.world_memory, ctx.feedback_memory
     )
     field = threat_field(ctx)
-    sanctuary = _edge_sanctuary_cells(ctx, traversability, field, eta=0)
-    if not sanctuary:
+    hold = max(1, int(_threshold(ctx, "night_resource_min_safe_hold_rounds", 3.0)))
+    if field.safe_for_window(actor.position, start_eta=0, rounds=hold,
+                             max_risk=_parameter(ctx, "night_resource_max_risk", 0.35)):
         return None
-    planner = SafePathPlanner(
-        width=ctx.state.map_width,
-        height=ctx.state.map_height,
-        threat=field,
-        threat_weight=_parameter(ctx, "night_threat_path_weight", 6.0),
-        hard_risk_threshold=_parameter(ctx, "night_hard_risk_threshold", 1.0),
-        max_steps=int(_threshold(ctx, "night_safe_path_max_steps", 64.0)),
-    )
-    result = planner.find_path_to_any(
-        ctx.world_memory,
-        actor.position,
-        sanctuary,
-        traversability=traversability,
-        deadline=ctx.deadline,
-    )
+    result = _escape_path(ctx, actor.position, traversability, field)
     if not result.found or result.steps < 1:
         return None
     return result.path[1]

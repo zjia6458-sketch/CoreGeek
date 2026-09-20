@@ -25,6 +25,7 @@ from fortress_agent.game_rules.tasks import available_task_zone_positions, activ
 from fortress_agent.memory.resources import ResourceStatus
 from fortress_agent.policy.context import PolicyContext
 from fortress_agent.world.traversability import TraversabilityMap
+from fortress_agent.game_rules.night_safety import threat_field, night_gather_is_safe
 
 
 class BasicLegalActionFilter:
@@ -56,6 +57,11 @@ class BasicLegalActionFilter:
             )
             if not traversability.is_walkable(action.x, action.y):
                 return False
+            if ctx.state.phase == "night" and actor.role == "worker":
+                from fortress_agent.domain.state import Position
+                field = threat_field(ctx)
+                if max(field.risk(Position(action.x, action.y), eta) for eta in (0, 1)) >= 1.0:
+                    return False
 
             # Leaving an active TaskPoint is a legal game action that *ends the
             # task*; it is not an instruction-format error. Candidate/Doctrine
@@ -68,6 +74,8 @@ class BasicLegalActionFilter:
                 return False
             resource = ctx.world_memory.resource(action.resource_id)
             if resource is None or resource.status is not ResourceStatus.AVAILABLE:
+                return False
+            if ctx.state.phase == "night" and not night_gather_is_safe(ctx, actor, resource):
                 return False
             return is_adjacent8(actor.position, (resource.x, resource.y))
 

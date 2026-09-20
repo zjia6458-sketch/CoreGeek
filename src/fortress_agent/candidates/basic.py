@@ -4,6 +4,7 @@ from fortress_agent.domain.action import (
     AttackAction,
     ExploreAction,
     GatherAction,
+    GoalApproachAction,
     MoveAction,
     ResourceApproachAction,
 )
@@ -16,7 +17,7 @@ from fortress_agent.game_rules.economy import (
     wall_construction_due, stone_batch_target,
     backpack_high_watermark_reached, in_mining_emergency_window,
     is_early_day_full_mining, near_night_mineral_return_due,
-    nonstone_cash_out_due, resource_selection_score, should_hold_current_mine,
+    vendor_trip_due, resource_selection_score, should_hold_current_mine,
 )
 from fortress_agent.game_rules.night_safety import (
     night_resource_route, night_gather_is_safe, night_retreat_step,
@@ -65,6 +66,8 @@ class MoveCandidateGenerator(CandidateGenerator):
         for actor in ctx.state.characters:
             if actor.role.lower() == "pioneer" and ctx.state.phase_task.strip():
                 continue
+            if actor.role.lower() == "worker" and vendor_trip_due(ctx, actor):
+                continue
             # Worker 已经贴着一个仍可采的矿时，正常阶段优先原地 collect，
             # 不生成随机 MOVE 去打断矿点连续采集。紧急撤离/返场窗口会让该条件自动失效。
             if actor.role.lower() == "worker" and should_hold_current_mine(ctx, actor):
@@ -101,6 +104,8 @@ class ExplorationCandidateGenerator(CandidateGenerator):
         ctx: PolicyContext,
         strategy: StrategyProfile,
     ):
+        if ctx.state.phase.lower() == "night":
+            return ()
         actions = []
         traversability = TraversabilityMap.from_state_and_memory(
                 ctx.state,
@@ -120,6 +125,8 @@ class ExplorationCandidateGenerator(CandidateGenerator):
             # exploration 会让高 information utility 抢走 gather/resource_approach，
             # 形成“满图乱走但产量很低”。Pioneer 仍保留探索职责。
             if actor.role.lower() == "worker":
+                if vendor_trip_due(ctx, actor):
+                    continue
                 builder_id = primary_builder_id(ctx.state)
                 construction_due = (
                     (weapon_count(ctx.state) < 3 and str(actor.actor_id) == builder_id and ctx.state.gold_self >= 25)
@@ -173,14 +180,17 @@ class GatherCandidateGenerator(CandidateGenerator):
                 continue
             # Once a useful non-stone batch is ready, let VendorApproach/Sell
             # finish the mining -> cash transaction instead of mining forever.
-            if (
-                ctx.state.phase.lower() == "day"
-                and nonstone_cash_out_due(ctx.state, actor, ctx.policy_state)
-                and any(zone.zone_type == "vendor" for zone in ctx.state.neutral_zones)
-            ):
+            if vendor_trip_due(ctx, actor):
                 continue
 
-            for resource in ctx.world_memory.available_resources():
+            committed = ctx.mining_memory.committed_resource(actor.actor_id) if ctx.mining_memory else None
+            current = ctx.world_memory.resource(committed) if committed is not None else None
+            if current is not None and is_adjacent8(actor.position, (current.x, current.y)):
+                resources = (current,)
+            else:
+                resources = ctx.world_memory.available_resources()
+
+            for resource in resources:
                 if resource.status is not ResourceStatus.AVAILABLE:
                     continue
                 if not is_adjacent8(actor.position, (resource.x, resource.y)):
@@ -251,7 +261,9 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
 
         builder_id = primary_builder_id(ctx.state)
         for actor in workers:
-            # Worker-1 在三种互补武器完成前保持主建设职责；只要仍有足够金币建下一座，
+            if should_hold_current_mine(ctx, actor):
+                continue
+            # Worker-1 在三座火箭塔完成前保持主建设职责；只要仍有足够金币建下一座，
             # 不启动采矿远征。Worker-2 开局若存在 stone，则只选择最近 stone。
             if weapon_count(ctx.state) < 3 and str(actor.actor_id) == builder_id and ctx.state.gold_self >= 25:
                 continue
@@ -269,10 +281,7 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
             # 非早期阶段则达到高水位后停止追新矿。
             if capacity and used >= capacity:
                 continue
-            if (
-                nonstone_cash_out_due(ctx.state, actor, ctx.policy_state)
-                and any(zone.zone_type == "vendor" for zone in ctx.state.neutral_zones)
-            ):
+            if vendor_trip_due(ctx, actor):
                 continue
             if not early_fill and backpack_high_watermark_reached(actor, ctx.policy_state):
                 continue
@@ -283,19 +292,13 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
             if wall_due and not early_fill and inventory["stone"] >= batch_target > 0:
                 continue
 
-            min_commit = max(0, int(ctx.policy_state.thresholds.get("resource_commitment_min_rounds", 4.0)))
             committed = (
                 ctx.mining_memory.committed_resource(actor.actor_id)
                 if ctx.mining_memory is not None
-                and ctx.mining_memory.commitment_active(
-                    actor.actor_id, current_round=ctx.state.round_id, min_rounds=min_commit
-                )
                 else None
             )
             candidates = []
             for resource in ctx.world_memory.available_resources():
-                if committed is not None and str(resource.resource_id) != committed:
-                    continue
                 if resource.status is not ResourceStatus.AVAILABLE:
                     continue
                 distance = chebyshev_distance(actor.position, (resource.x, resource.y))
@@ -306,17 +309,19 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
                 # 第二个 Worker 开局立即承担采石职责；三塔完成后两个 Worker 都
                 # 只开新的 stone 行程直到三面墙 Blueprint 完成。已经贴着的当前矿
                 # 仍由 GatherCandidate 采完，避免半途来回切换。
-                if weapon_count(ctx.state) < 3 and str(actor.actor_id) != builder_id and stone_available and resource.resource_type.lower() != "stone":
+                is_committed = str(resource.resource_id) == committed
+                if not is_committed and weapon_count(ctx.state) < 3 and str(actor.actor_id) != builder_id and stone_available and resource.resource_type.lower() != "stone":
                     continue
-                if wall_due and stone_available and resource.resource_type.lower() != "stone":
+                if not is_committed and wall_due and stone_available and resource.resource_type.lower() != "stone":
                     continue
 
                 score, components, formula = resource_selection_score(
                     ctx, actor, resource, distance=distance
                 )
-                candidates.append((score, -distance, str(resource.resource_id), resource, components, formula))
+                candidates.append((is_committed, score, -distance, str(resource.resource_id), resource, components, formula))
 
-            for _, _, _, resource, _components, _formula in sorted(candidates, reverse=True)[:candidate_limit]:
+            found = 0
+            for is_committed, _, _, _, resource, _components, _formula in sorted(candidates, reverse=True):
                 access_cells = traversability.resource_access_cells(resource)
                 if not access_cells:
                     continue
@@ -340,6 +345,9 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
                         resource_id=resource.resource_id,
                     )
                 )
+                found += 1
+                if is_committed or found >= candidate_limit:
+                    break
 
         return tuple(actions)
 
@@ -358,17 +366,16 @@ class NightResourceApproachCandidateGenerator(CandidateGenerator):
         for actor in ctx.state.characters:
             if actor.role.lower() != "worker" or actor.hp <= 0:
                 continue
+            if should_hold_current_mine(ctx, actor) and any(is_adjacent8(actor.position, (r.x, r.y)) and night_gather_is_safe(ctx, actor, r)
+                   for r in ctx.world_memory.available_resources()):
+                continue
             capacity = actor.backpack_capacity or 0
             used = sum(i.amount for i in actor.inventory)
             if capacity and used >= capacity:
                 continue
-            min_commit = max(0, int(ctx.policy_state.thresholds.get("resource_commitment_min_rounds", 4.0)))
             committed_id = (
                 ctx.mining_memory.committed_resource(actor.actor_id)
                 if ctx.mining_memory is not None
-                and ctx.mining_memory.commitment_active(
-                    actor.actor_id, current_round=ctx.state.round_id, min_rounds=min_commit
-                )
                 else None
             )
             committed_safe = False
@@ -428,11 +435,13 @@ class NightWorkerRetreatCandidateGenerator(CandidateGenerator):
             step = night_retreat_step(ctx, actor)
             if step is None or step == actor.position:
                 continue
-            actions.append(MoveAction(
+            actions.append(GoalApproachAction(
                 actor_id=actor.actor_id,
                 action_type="move",
                 x=step.x,
                 y=step.y,
+                goal_kind="night_retreat", goal_id="safe_edge",
+                goal_x=step.x, goal_y=step.y,
             ))
         return tuple(actions)
 

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from fortress_agent.domain.action import GatherAction, MoveAction
 from fortress_agent.domain.utility import UtilityBreakdown
+from fortress_agent.game_rules.economy import vendor_trip_due
 from fortress_agent.game_rules.geometry import is_adjacent8
+from fortress_agent.game_rules.night_safety import (
+    night_gather_is_safe,
+    night_retreat_step,
+)
 from fortress_agent.memory.resources import ResourceStatus
 from fortress_agent.policy.context import PolicyContext
 from fortress_agent.world.traversability import TraversabilityMap
@@ -24,6 +29,20 @@ class BasicEmergencyPolicy:
     """
 
     def select(self, ctx: PolicyContext):
+        if ctx.state.phase.lower() == "night":
+            for actor in sorted(ctx.state.characters, key=lambda a: str(a.actor_id)):
+                if actor.hp <= 0 or actor.role != "worker":
+                    continue
+                step = night_retreat_step(ctx, actor)
+                if step is not None:
+                    return MoveAction(actor.actor_id, "move", step.x, step.y), UtilityBreakdown(total=12.0)
+                if actor.backpack_capacity and sum(i.amount for i in actor.inventory) >= actor.backpack_capacity:
+                    continue
+                for resource in ctx.world_memory.available_resources():
+                    if is_adjacent8(actor.position, (resource.x, resource.y)) and night_gather_is_safe(ctx, actor, resource):
+                        return GatherAction(actor.actor_id, "gather", resource.resource_id), UtilityBreakdown(total=1.0)
+            raise EmergencyActionUnavailable("no verified safe night action; hold position")
+
         traversability = TraversabilityMap.from_state_and_memory(
             ctx.state,
             ctx.world_memory,
@@ -38,6 +57,8 @@ class BasicEmergencyPolicy:
                 key=lambda x: str(x.actor_id),
             ):
                 if actor.role.lower() != "worker":
+                    continue
+                if vendor_trip_due(ctx, actor):
                     continue
                 for resource in ctx.world_memory.available_resources():
                     if resource.status is not ResourceStatus.AVAILABLE:
@@ -60,6 +81,8 @@ class BasicEmergencyPolicy:
             ctx.state.characters,
             key=lambda x: str(x.actor_id),
         ):
+            if actor.hp <= 0 or (actor.role == "worker" and vendor_trip_due(ctx, actor)):
+                continue
             for pos in traversability.walkable_neighbors(
                 actor.position.x,
                 actor.position.y,

@@ -46,6 +46,7 @@ from fortress_agent.observation.memory_engine import (
 from fortress_agent.memory.strategic import StrategicMemory
 from fortress_agent.memory.feedback import RuntimeFeedbackMemory
 from fortress_agent.memory.economy import MiningRuntimeMemory
+from fortress_agent.safety.emergency import EmergencyActionUnavailable
 from fortress_agent.memory.robot_trajectory import RobotTrajectoryMemory
 from fortress_agent.memory.movement import MovementHistoryMemory
 from fortress_agent.config.tuning import RuntimeLearningConfig
@@ -406,6 +407,15 @@ class FortressAgentRuntime:
             },
         )
         self._mining_memory.reconcile(state=state, world_memory=self._memory.view())
+        economy_sessions = self._mining_memory.view()
+        self._trace_emit(
+            kind="worker_economy_sessions", correlation_id=correlation_id, round_id=state.round_id,
+            data={
+                "mining_targets": dict(economy_sessions.committed_resource_by_actor),
+                "vendor_targets": dict(economy_sessions.vendor_by_actor),
+                "phase": state.phase,
+            },
+        )
 
         realized_reward = None
 
@@ -531,6 +541,12 @@ class FortressAgentRuntime:
             deadline.ensure_remaining(
                 0.85,
                 stage="after_policy_graph",
+            )
+        except EmergencyActionUnavailable as exc:
+            return self._deadline_fallback(
+                state=state, events=events, realized_reward=realized_reward,
+                correlation_id=correlation_id, deadline=deadline,
+                reason=str(exc), fallback_code="safety_hold",
             )
         except (DeadlineExceeded, GraphExecutionError) as exc:
             return self._deadline_fallback(
@@ -1129,8 +1145,9 @@ class FortressAgentRuntime:
         correlation_id: str,
         deadline: Deadline,
         reason: str,
+        fallback_code: str = "deadline_fallback",
     ) -> AgentTurnResult:
-        """预算不足时返回协议合法的空动作响应。
+        """预算不足或没有已验证安全动作时返回协议合法的空动作响应。
 
         这里不是异常恢复，而是主动的 deadline degradation。
         本回合已经收到的世界观测仍然保留；由于没有向判题器发送角色动作，
@@ -1151,7 +1168,7 @@ class FortressAgentRuntime:
         )
 
         self._trace_emit(
-            kind="deadline_fallback",
+            kind=fallback_code,
             correlation_id=correlation_id,
             round_id=state.round_id,
             data={
@@ -1178,7 +1195,7 @@ class FortressAgentRuntime:
             realized_reward=realized_reward,
             experience_id=None,
             correlation_id=correlation_id,
-            error_code="deadline_fallback",
+            error_code=fallback_code,
             error_message=reason,
         )
 

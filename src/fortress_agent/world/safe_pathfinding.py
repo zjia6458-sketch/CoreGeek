@@ -1,10 +1,10 @@
 """夜间时间感知安全寻路与机器人威胁场。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
 import heapq
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from math import inf
-from typing import Iterable
 
 from fortress_agent.domain.state import GameState, Position
 from fortress_agent.game_rules.build_area import station_footprint_cells
@@ -44,6 +44,7 @@ class RobotThreatField:
         self.config = config
         self._station_cells = tuple(station_footprint_cells(state))
         self._routes: dict[str, tuple[tuple[Position, ...], tuple[Position, ...]]] = {}
+        self._risk_cache: dict[tuple[int, int, int], float] = {}
         for enemy in state.enemies:
             if enemy.hp <= 0:
                 continue
@@ -102,9 +103,20 @@ class RobotThreatField:
         return tuple(route)
 
     def _enemy_at(self, enemy_id: str, eta: int, route: tuple[Position, ...]) -> Position:
-        return route[min(max(0, eta), len(route) - 1)]
+        if eta < len(route):
+            return route[max(0, eta)]
+        current = route[-1]
+        for _ in range(eta - len(route) + 1):
+            following = self._step_toward_station(current)
+            if following == current:
+                break
+            current = following
+        return current
 
     def risk(self, pos: Position, eta: int) -> float:
+        key = (pos.x, pos.y, eta)
+        if key in self._risk_cache:
+            return self._risk_cache[key]
         risk = 0.0
         for enemy in self.state.enemies:
             if enemy.hp <= 0:
@@ -114,9 +126,13 @@ class RobotThreatField:
                 continue
             attack_range = max(0, int(enemy.attack_range or 3))
             hard = attack_range + max(0, self.config.hard_safety_margin)
-            soft = attack_range + max(hard, self.config.soft_safety_margin)
-            for route in routes:
-                predicted = self._enemy_at(str(enemy.enemy_id), eta, route)
+            soft = max(hard, attack_range + max(0, self.config.soft_safety_margin))
+            # A robot may stop to attack a wall or change heading. Never assume
+            # its observed attack zone is vacated merely because a forecast moves.
+            predicted_positions = [enemy.position] + [
+                self._enemy_at(str(enemy.enemy_id), eta, route) for route in routes
+            ]
+            for predicted in predicted_positions:
                 distance = chebyshev_distance(pos, predicted)
                 if distance <= hard:
                     local = 1.0
@@ -126,6 +142,7 @@ class RobotThreatField:
                 else:
                     local = 0.0
                 risk = max(risk, local)
+        self._risk_cache[key] = risk
         return risk
 
     def safe_for_window(self, pos: Position, *, start_eta: int, rounds: int, max_risk: float) -> bool:
@@ -170,20 +187,34 @@ class SafePathPlanner:
         deadline: DeadlineView | None = None,
         deadline_reserve_seconds: float = 0.45,
         start_eta: int = 0,
+        goal_is_safe: Callable[[Position, int], bool] | None = None,
     ) -> PathResult:
         goal_set = {
             (g.x, g.y) for g in goals
-            if traversability.inside(g.x, g.y) and traversability.is_walkable(g.x, g.y)
+            if traversability.inside(g.x, g.y)
+            and (traversability.is_walkable(g.x, g.y) or g == start)
         }
         if not goal_set:
             return PathResult(False, (), inf)
         start_key = (start.x, start.y, max(0, int(start_eta)))
-        if (start.x, start.y) in goal_set:
+        def acceptable(x, y, eta):
+            pos = Position(x, y)
+            return (self.threat.risk(pos, eta) < self.hard_risk_threshold
+                    and (goal_is_safe is None or goal_is_safe(pos, eta)))
+
+        if (start.x, start.y) in goal_set and acceptable(start.x, start.y, start_key[2]):
             return PathResult(True, (start,), 0.0)
+
+        heuristic_cache = {}
+
+        def heuristic(x, y):
+            if (x, y) not in heuristic_cache:
+                heuristic_cache[(x, y)] = self._heuristic(x, y, goal_set)
+            return heuristic_cache[(x, y)]
 
         frontier: list[tuple[float, int, int, int, int]] = []
         serial = 0
-        heapq.heappush(frontier, (self._heuristic(start.x, start.y, goal_set), serial, start.x, start.y, start_key[2]))
+        heapq.heappush(frontier, (heuristic(start.x, start.y), serial, start.x, start.y, start_key[2]))
         came: dict[tuple[int, int, int], tuple[int, int, int] | None] = {start_key: None}
         cost: dict[tuple[int, int, int], float] = {start_key: 0.0}
         reached: tuple[int, int, int] | None = None
@@ -196,7 +227,7 @@ class SafePathPlanner:
                 return PathResult(False, (), inf)
             _, _, x, y, eta = heapq.heappop(frontier)
             expansions += 1
-            if (x, y) in goal_set:
+            if (x, y) in goal_set and acceptable(x, y, eta):
                 reached = (x, y, eta)
                 break
             if eta - start_key[2] >= self.max_steps:
@@ -208,7 +239,10 @@ class SafePathPlanner:
                 if policy is NavigationPolicy.KNOWN_ONLY and not cell.discovered:
                     continue
                 next_eta = eta + 1
-                risk = self.threat.risk(Position(nx, ny), next_eta)
+                # Both sides of the turn boundary matter when robot/worker
+                # execution order is unknown.
+                risk = max(self.threat.risk(Position(nx, ny), next_eta),
+                           self.threat.risk(Position(nx, ny), eta))
                 if risk >= self.hard_risk_threshold:
                     continue
                 step_cost = 1.0 + risk * self.threat_weight
@@ -222,7 +256,7 @@ class SafePathPlanner:
                 came[key] = (x, y, eta)
                 serial += 1
                 heapq.heappush(frontier, (
-                    new_cost + self._heuristic(nx, ny, goal_set),
+                    new_cost + heuristic(nx, ny),
                     serial, nx, ny, next_eta,
                 ))
 

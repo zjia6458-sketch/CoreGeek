@@ -8,6 +8,7 @@ from fortress_agent.domain.state import BuildingState, GameState, Position
 from fortress_agent.game_rules.catalog import WEAPON_TYPES
 from fortress_agent.game_rules.geometry import chebyshev_distance
 from fortress_agent.world.occupancy import BuildingFootprintResolver
+from fortress_agent.world.traversability import TraversabilityMap
 
 Cell = tuple[int, int]
 
@@ -404,17 +405,27 @@ def rocket_cluster_plan(state: GameState) -> RocketClusterPlan | None:
     map_center_y = (state.map_height - 1) / 2.0
     preferred_y = min_y if station_center_y >= map_center_y else max_y
     preferred = (rear_x, preferred_y)
+    existing = {
+        (b.position.x, b.position.y) for b in state.buildings
+        if b.owner == "self" and b.building_type in WEAPON_TYPES
+    }
+    terrain = TraversabilityMap.from_state(state)
+    # Ignore transient actors/robots when fixing the layout, but avoid static
+    # blockers. Keep already-built weapons in the same common-control cluster.
+    static_blocked = (terrain.resource_cells | terrain.neutral_cells | terrain.building_cells) - existing
 
     def adjacent_weapon_cells(controller: Cell) -> tuple[Cell, ...]:
         cx, cy = controller
         candidates = [
             cell for cell in weapon_ring
             if cell != controller and chebyshev_distance(controller, cell) <= 1
+            and cell not in static_blocked
         ]
         # Prefer cells facing map interior, then compact/stable coordinates.
         map_center_x = (state.map_width - 1) / 2.0
         map_center_y2 = (state.map_height - 1) / 2.0
         candidates.sort(key=lambda c: (
+            c not in existing,
             max(abs(c[0] - map_center_x), abs(c[1] - map_center_y2)),
             abs(c[0] - map_center_x) + abs(c[1] - map_center_y2),
             c[0], c[1],
@@ -429,8 +440,10 @@ def rocket_cluster_plan(state: GameState) -> RocketClusterPlan | None:
         ),
     )
     for controller in candidates:
+        if controller in static_blocked or controller in existing:
+            continue
         rockets = adjacent_weapon_cells(controller)
-        if len(rockets) >= 3:
+        if len(rockets) >= 3 and existing.issubset(set(rockets[:3])):
             return RocketClusterPlan(controller=controller, rocket_cells=tuple(rockets[:3]))
     return None
 

@@ -29,6 +29,9 @@ class GoalApproachRewardModel(ExpectedRewardModel):
         )
         action_cost = 0.10 + backtrack
 
+        if action.goal_kind == "night_retreat":
+            return RewardBreakdown(survival=12.0, action_cost=action_cost, total=12.0-action_cost)
+
         if action.goal_kind == "task":
             task = next((t for t in ctx.state.tasks if str(t.task_id) == action.goal_id), None)
             reward = float(task.reward or 20.0) if task is not None else 20.0

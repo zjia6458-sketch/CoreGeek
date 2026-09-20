@@ -4,6 +4,7 @@ from fortress_agent.evaluators.base import EvaluatorRegistry
 from fortress_agent.policy.construction_priority import opening_construction_priority
 from fortress_agent.policy.context import PolicyContext
 from fortress_agent.policy.strategy import StrategyProfile
+from fortress_agent.policy.worker_priority import worker_action_priority
 
 
 class RewardAwareRanker:
@@ -25,6 +26,7 @@ class RewardAwareRanker:
         ranked.sort(
             key=lambda item: (
                 -opening_construction_priority(ctx.state, item[0]),
+                -worker_action_priority(ctx, item[0]),
                 -item[1].total,
                 item[1].risk,
                 repr(item[0]),
