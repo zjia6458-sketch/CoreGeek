@@ -50,7 +50,7 @@ WALL_TARGET_MAX = 16
 RESOURCE_COMMITMENT_MIN_ROUNDS = 4
 
 # ---------------------------- 夜间安全采矿配置 ----------------------------
-# 仅考虑距离任一地图边缘不超过该值的矿；机器人主要从中部向基地推进。
+# 矿点可以位于地图任意位置；该值定义撤离时低风险边缘安全区的宽度。
 NIGHT_EDGE_MINING_MARGIN_CELLS = 5
 # RobotThreatField 向未来预测多少回合。
 NIGHT_ROBOT_PREDICTION_HORIZON = 12
@@ -68,7 +68,8 @@ NIGHT_WORKER_MIN_HP_RATIO = 0.55
 NIGHT_RESOURCE_MIN_SAFE_HOLD_ROUNDS = 3
 # 生命低于 30% 时进入治疗流程（购买/使用 Medicine）。
 CHARACTER_MEDICINE_HP_RATIO = 0.30
-# Day2+ 围墙低于 50% HP 时进入 WallFixer 修复流程。
+# Day2+ 围墙低于 50% HP 时进入维护；有 stone 且低于 35% 时优先拆建，
+# 其余低血量围墙才进入需花金币购买 WallFixer 的修复流程。
 WALL_FIXER_HP_RATIO = 0.50
 
 STRATEGY_THRESHOLDS = {

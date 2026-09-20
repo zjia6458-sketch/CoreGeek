@@ -1,6 +1,6 @@
 from types import MappingProxyType
 
-from fortress_agent.domain.action import BuildAction, ExploreAction, GatherAction
+from fortress_agent.domain.action import AcceptTaskAction, BuildAction, ExploreAction, GatherAction
 from fortress_agent.domain.policy_state import PolicyState
 from fortress_agent.domain.state import Position
 from fortress_agent.memory.world import WorldMemory
@@ -10,7 +10,7 @@ from fortress_agent.reward.models import (
     ExplorationRewardModel,
     GatherRewardModel,
 )
-from fortress_agent.reward.business import BuildRewardModel
+from fortress_agent.reward.business import AcceptTaskRewardModel, BuildRewardModel
 
 
 class Deadline:
@@ -173,3 +173,58 @@ def test_first_weapon_default_strategy_prefers_rocket():
     ))
 
     assert rocket.total > railgun.total > gatling.total
+
+
+def test_accept_task_reward_supports_second_cell_of_task_point_2():
+    state = parse({
+        "roundNo": 10,
+        "mapInfo": {
+            "width": 41,
+            "height": 32,
+            "zones": [
+                {"neutralType": "challengerTaskPoint2", "pos": {"x": 10, "y": 10}},
+                {"neutralType": "challengerTaskPoint2", "pos": {"x": 10, "y": 11}},
+            ],
+        },
+        "teamOur": {
+            "type": "challenger",
+            "goldNum": 0,
+            "totalScore": 0,
+            "playerTasks": [{
+                "taskType": "自进化类2",
+                "taskPosition": {"x": 10, "y": 10},
+                "coldDownRounds": 0,
+                "scoreReward": 50,
+                "goldReward": 30,
+                "isValid": True,
+                "timeoutRounds": 20,
+            }],
+            # Adjacent to the second physical cell, but not taskPosition.
+            "roles": [{
+                "id": 11,
+                "pos": {"x": 9, "y": 12},
+                "roleType": "pioneer",
+                "health": 200,
+                "backPackCapability": 40,
+                "backpack": [],
+            }],
+        },
+        "teamEnemy": {"roles": []},
+        "robot": {"roles": []},
+        "errors": [],
+    })
+    ctx = PolicyContext(
+        state=state,
+        world_memory=WorldMemory().view(),
+        policy_state=PolicyState(),
+        deadline=Deadline(),
+        features=MappingProxyType({}),
+    )
+
+    reward = AcceptTaskRewardModel().estimate(
+        ctx,
+        AcceptTaskAction(actor_id=11, action_type="acceptTask"),
+    )
+
+    assert reward.risk == 0.0
+    assert reward.total > 0.0

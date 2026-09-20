@@ -372,14 +372,18 @@ def wall_build_priority(state: GameState, target: Position | Cell) -> float:
 
 @dataclass(frozen=True, slots=True)
 class RocketClusterPlan:
-    """Three Rocket cells sharing one fixed controller cell."""
+    """Three weapon cells sharing one fixed controller cell.
+
+    The historical class name is retained for compatibility.  Current doctrine
+    fills these cells with Rocket, Gatling and Railgun rather than three Rockets.
+    """
 
     controller: Cell
     rocket_cells: tuple[Cell, Cell, Cell]
 
 
 def rocket_cluster_plan(state: GameState) -> RocketClusterPlan | None:
-    """Derive a stable three-Rocket cluster around one common control cell.
+    """Derive a stable three-weapon cluster around one common control cell.
 
     The controller is chosen on the *rear* side of the weapon ring so the
     Pioneer can stand in a comparatively protected cell while the three weapon
@@ -432,7 +436,7 @@ def rocket_cluster_plan(state: GameState) -> RocketClusterPlan | None:
 
 
 def ordered_weapon_build_cells(state: GameState) -> tuple[Cell, ...]:
-    """Return weapon cells with the fixed three-Rocket cluster first."""
+    """Return weapon cells with the fixed three-weapon cluster first."""
     cells = station_defense_cells(state, ring_distance=1)
     if not cells:
         return ()

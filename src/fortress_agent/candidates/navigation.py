@@ -473,10 +473,10 @@ class WallBuildApproachCandidateGenerator(CandidateGenerator):
 
 
 class BaseReturnCandidateGenerator(CandidateGenerator):
-    """Prepare 阶段：Pioneer 回公共 Rocket 控制点；Worker 回基地/施工圈。
+    """Prepare 阶段：Pioneer 回公共武器控制点；Worker 回基地/施工圈。
 
-    Pioneer 即使正在执行自进化任务也允许在夜前主动离开 TaskPoint。离开会结束
-    当前任务，但这是合法的战略选择，不是协议错误；生存/夜战优先。
+    活跃任务中的 Pioneer 保持任务点锚定；进入夜间后，更高优先级的 defense
+    策略可在敌人存在时为了生存与防守接管其动作。
     """
 
     generator_id = "base_return"

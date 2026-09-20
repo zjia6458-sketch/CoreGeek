@@ -18,6 +18,7 @@ from fortress_agent.game_rules.build_area import wall_build_priority, weapon_bui
 from fortress_agent.game_rules.economy import wall_construction_due, wall_return_urgent
 from fortress_agent.game_rules.economy import wall_health_ratio
 from fortress_agent.game_rules.upgrades import next_upgrade_target
+from fortress_agent.game_rules.tasks import task_zone_positions_for_task
 
 from .base import ExpectedRewardModel
 
@@ -283,7 +284,10 @@ class AcceptTaskRewardModel(ExpectedRewardModel):
                 if (
                     task.status == "available"
                     and task.position is not None
-                    and is_adjacent8(task.position, actor.position)
+                    and any(
+                        is_adjacent8(position, actor.position)
+                        for position in task_zone_positions_for_task(ctx.state, task)
+                    )
                 )
             ),
             None,

@@ -214,7 +214,7 @@ def stone_batch_target(state, actor, policy_state=None) -> int:
 def reserved_stone(state, actor) -> int:
     """三面墙 Blueprint 未完成时，stone 始终作为战略材料保留。
 
-    Worker-2 从开局就采 stone；即使 Worker-1 尚未完成三 Rocket，也不应把
+    Worker-2 从开局就采 stone；即使 Worker-1 尚未完成三种互补武器，也不应把
     这些石头提前卖掉，否则会破坏“建塔完成后立即落墙”的长期职责。
     """
     blueprint = wall_blueprint_cells(state)

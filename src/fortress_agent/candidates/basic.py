@@ -251,7 +251,7 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
 
         builder_id = primary_builder_id(ctx.state)
         for actor in workers:
-            # Worker-1 在三 Rocket 完成前保持主建设职责；只要仍有足够金币建下一座，
+            # Worker-1 在三种互补武器完成前保持主建设职责；只要仍有足够金币建下一座，
             # 不启动采矿远征。Worker-2 开局若存在 stone，则只选择最近 stone。
             if weapon_count(ctx.state) < 3 and str(actor.actor_id) == builder_id and ctx.state.gold_self >= 25:
                 continue
