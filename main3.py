@@ -78,6 +78,7 @@ STRATEGY_THRESHOLDS = {
     "early_day_full_backpack_rounds": float(EARLY_DAY_FULL_BACKPACK_ROUNDS),
     "backpack_high_watermark_ratio": float(BACKPACK_HIGH_WATERMARK_RATIO),
     "near_night_mineral_return_ratio": float(NEAR_NIGHT_MINERAL_RETURN_RATIO),
+    "nonstone_sell_batch_size": 4.0,
     "stone_batch_size": float(STONE_BATCH_SIZE),
     "resource_candidate_limit": float(RESOURCE_CANDIDATE_LIMIT),
     "attack_target_pool_limit": float(ATTACK_TARGET_POOL_LIMIT),
@@ -95,6 +96,7 @@ STRATEGY_THRESHOLDS = {
     "night_safe_path_max_steps": float(NIGHT_SAFE_PATH_MAX_STEPS),
     "night_worker_min_hp_ratio": float(NIGHT_WORKER_MIN_HP_RATIO),
     "night_resource_min_safe_hold_rounds": float(NIGHT_RESOURCE_MIN_SAFE_HOLD_ROUNDS),
+    "wall_rebuild_hp_ratio": 0.35,
     "character_medicine_hp_ratio": float(CHARACTER_MEDICINE_HP_RATIO),
     "wall_fixer_hp_ratio": float(WALL_FIXER_HP_RATIO),
 }
@@ -139,7 +141,7 @@ STRATEGY_PROFILE_PARAMETERS = {
     "strategy_prepare_activation_score": 1.0,
     "strategy_prepare_activation_priority": 900.0,
     "strategy_active_task_activation_score": 1.0,
-    "strategy_active_task_activation_priority": 850.0,
+    "strategy_active_task_activation_priority": 950.0,
     "strategy_day_default_activation_score": 0.10,
     "strategy_day_default_activation_priority": 100.0,
 

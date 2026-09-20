@@ -12,11 +12,11 @@ from fortress_agent.game_rules.geometry import chebyshev_distance, is_adjacent8,
 from fortress_agent.game_rules.catalog import weapon_attack_range
 from fortress_agent.game_rules.combat import best_rocket_targets, estimate_attack_value
 from fortress_agent.game_rules.economy import (
-    primary_builder_id, weapon_count, wall_count, backpack_usage_ratio, inventory_counts,
-    wall_construction_due, stone_batch_target, wall_return_urgent,
+    primary_builder_id, weapon_count, wall_count, inventory_counts,
+    wall_construction_due, stone_batch_target,
     backpack_high_watermark_reached, in_mining_emergency_window,
     is_early_day_full_mining, near_night_mineral_return_due,
-    resource_selection_score, should_hold_current_mine,
+    nonstone_cash_out_due, resource_selection_score, should_hold_current_mine,
 )
 from fortress_agent.game_rules.night_safety import (
     night_resource_route, night_gather_is_safe, night_retreat_step,
@@ -171,6 +171,14 @@ class GatherCandidateGenerator(CandidateGenerator):
             # 背包已满时 collect 一定没有收益。
             if actor.backpack_capacity and sum(i.amount for i in actor.inventory) >= actor.backpack_capacity:
                 continue
+            # Once a useful non-stone batch is ready, let VendorApproach/Sell
+            # finish the mining -> cash transaction instead of mining forever.
+            if (
+                ctx.state.phase.lower() == "day"
+                and nonstone_cash_out_due(ctx.state, actor, ctx.policy_state)
+                and any(zone.zone_type == "vendor" for zone in ctx.state.neutral_zones)
+            ):
+                continue
 
             for resource in ctx.world_memory.available_resources():
                 if resource.status is not ResourceStatus.AVAILABLE:
@@ -261,6 +269,11 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
             # 非早期阶段则达到高水位后停止追新矿。
             if capacity and used >= capacity:
                 continue
+            if (
+                nonstone_cash_out_due(ctx.state, actor, ctx.policy_state)
+                and any(zone.zone_type == "vendor" for zone in ctx.state.neutral_zones)
+            ):
+                continue
             if not early_fill and backpack_high_watermark_reached(actor, ctx.policy_state):
                 continue
 
@@ -332,7 +345,7 @@ class ResourceApproachCandidateGenerator(CandidateGenerator):
 
 
 class NightResourceApproachCandidateGenerator(CandidateGenerator):
-    """夜间 Worker 只对通过完整安全门控的边缘矿生成移动候选。"""
+    """夜间 Worker 对任意通过完整路线/驻留/撤离门控的矿生成候选。"""
 
     generator_id = "night_resource_approach"
     tags = frozenset({"defense"})
@@ -445,7 +458,7 @@ class AttackCandidateGenerator(CandidateGenerator):
                 continue
 
             # V0.5.8 doctrine: Pioneer is the dedicated night weapon controller.
-            # Workers remain free for safe edge mining/retreat and never steal the
+            # Workers remain free for safe mining/retreat and never steal the
             # controller slot from Pioneer.
             living_pioneers = tuple(
                 actor for actor in ctx.state.characters

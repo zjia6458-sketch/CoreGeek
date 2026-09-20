@@ -8,6 +8,7 @@ from fortress_agent.memory.feedback import RuntimeFeedbackMemoryView
 from fortress_agent.memory.world import WorldMemoryView
 from fortress_agent.memory.economy import MiningRuntimeMemoryView
 from fortress_agent.memory.robot_trajectory import RobotTrajectoryMemoryView
+from fortress_agent.memory.movement import MovementHistoryView
 from fortress_agent.safety.deadline import DeadlineView
 
 from .context import PolicyContext
@@ -29,6 +30,7 @@ class PolicyContextFactory:
         correlation_id: str | None = None,
         mining_memory: MiningRuntimeMemoryView | None = None,
         robot_trajectory: RobotTrajectoryMemoryView | None = None,
+        movement_history: MovementHistoryView | None = None,
     ) -> PolicyContext:
         return PolicyContext(
             state=state,
@@ -45,4 +47,5 @@ class PolicyContextFactory:
             correlation_id=correlation_id,
             mining_memory=mining_memory,
             robot_trajectory=robot_trajectory,
+            movement_history=movement_history,
         )

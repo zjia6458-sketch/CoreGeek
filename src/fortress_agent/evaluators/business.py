@@ -4,6 +4,7 @@ from fortress_agent.domain.action import (
     AcceptTaskAction,
     BuildAction,
     BuyAction,
+    RemoveAction,
     SellAction,
     SubmitAnswerAction,
     SummonTreasureAction,
@@ -16,6 +17,11 @@ from .basic import _RewardBackedEvaluator
 class SellEvaluator(_RewardBackedEvaluator):
     evaluator_id = "sell"
     action_type = SellAction
+
+
+class RemoveEvaluator(_RewardBackedEvaluator):
+    evaluator_id = "remove_wall"
+    action_type = RemoveAction
 
 
 class BuyEvaluator(_RewardBackedEvaluator):

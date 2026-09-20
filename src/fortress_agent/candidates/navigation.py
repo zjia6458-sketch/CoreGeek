@@ -7,9 +7,10 @@ from fortress_agent.domain.action import GoalApproachAction
 from fortress_agent.domain.state import Position
 from fortress_agent.game_rules.geometry import chebyshev_distance, is_adjacent8
 from fortress_agent.game_rules.economy import (
-    sellable_amount, weapon_count, wall_count, primary_builder_id,
-    wall_construction_due, stone_batch_target, wall_return_urgent, inventory_counts,
+    sellable_amount, weapon_count, primary_builder_id,
+    wall_construction_due, stone_batch_target,
     near_night_mineral_return_due, in_mining_emergency_window,
+    wall_fixer_target, wall_rebuild_target,
 )
 from fortress_agent.game_rules.tasks import task_zone_positions_for_task
 from fortress_agent.game_rules.catalog import KNOWN_WEAPON_SHOP_PRICES
@@ -18,7 +19,7 @@ from fortress_agent.policy.context import PolicyContext
 from fortress_agent.policy.strategy import StrategyProfile
 from fortress_agent.world.occupancy import BuildingFootprintResolver
 from fortress_agent.game_rules.build_area import (
-    ordered_wall_build_cells, ordered_weapon_build_cells, rocket_cluster_plan,
+    ordered_wall_build_cells, rocket_cluster_plan,
     wall_blueprint_missing_count, wall_blueprint_complete,
 )
 from fortress_agent.world.pathfinding import AStarPathfinder, NavigationPolicy
@@ -238,30 +239,34 @@ class WeaponShopApproachCandidateGenerator(CandidateGenerator):
         builder_id = primary_builder_id(ctx.state)
         upgrade = next_upgrade_target(ctx.state)
         medicine_threshold = float(ctx.policy_state.thresholds.get("character_medicine_hp_ratio", 0.30))
-        fixer_threshold = float(ctx.policy_state.thresholds.get("wall_fixer_hp_ratio", 0.50))
         task_text = "\n".join((
             ctx.state.phase_task or "", ctx.state.last_command_result or "", ctx.state.raw_llm_response or ""
         )).casefold()
         standard_names = set(KNOWN_WEAPON_SHOP_PRICES)
         actions = []
+        def affordable(name: str) -> bool:
+            price = ctx.state.weapon_shop.get(name)
+            if price is None:
+                price = next((v for k, v in ctx.state.weapon_shop.items() if k.lower() == name.lower()), None)
+            return price is not None and float(price) <= float(ctx.state.gold_self)
+
         for actor in ctx.state.characters:
             inv = _inventory(actor)
             needs_medicine = bool(
                 actor.max_hp and actor.hp / max(1, actor.max_hp) < medicine_threshold
                 and inv["medicine"] <= 0
+                and affordable("Medicine")
             )
             needs_fixer = bool(
                 str(actor.actor_id) == builder_id and ctx.state.day >= 2
                 and inv["wallfixer"] <= 0
-                and any(
-                    b.owner == "self" and b.building_type == "wall" and b.max_hp and b.hp is not None
-                    and b.hp / max(1, b.max_hp) < fixer_threshold
-                    for b in ctx.state.buildings
-                )
+                and wall_fixer_target(ctx.state, actor, ctx.policy_state) is not None
+                and affordable("WallFixer")
             )
             needs_upgrade = bool(
                 str(actor.actor_id) == builder_id and upgrade is not None
                 and inv[upgrade.voucher_name.lower()] <= 0
+                and affordable(upgrade.voucher_name)
             )
             needs_task_item = False
             if actor.role == "pioneer" and ctx.state.phase_task.strip():
@@ -269,6 +274,7 @@ class WeaponShopApproachCandidateGenerator(CandidateGenerator):
                     name not in standard_names
                     and name.casefold() in task_text
                     and inv[name.lower()] <= 0
+                    and affordable(name)
                     for name in ctx.state.weapon_shop
                 )
             if not (needs_medicine or needs_fixer or needs_upgrade or needs_task_item):
@@ -300,27 +306,30 @@ class UseTargetApproachCandidateGenerator(CandidateGenerator):
         )
         builder_id = primary_builder_id(ctx.state)
         upgrade = next_upgrade_target(ctx.state)
-        fixer_threshold = float(ctx.policy_state.thresholds.get("wall_fixer_hp_ratio", 0.50))
         actions = []
         for actor in ctx.state.characters:
             inv = _inventory(actor)
             target = None
             goal_kind = ""
             goal_id = ""
-            if upgrade is not None and inv[upgrade.voucher_name.lower()] > 0:
+            rebuild = (
+                wall_rebuild_target(ctx.state, actor, ctx.policy_state)
+                if str(actor.actor_id) == builder_id else None
+            )
+            if rebuild is not None:
+                target = rebuild.position
+                goal_kind = "wall_rebuild"
+                goal_id = str(rebuild.building_id)
+            elif upgrade is not None and inv[upgrade.voucher_name.lower()] > 0:
                 target = upgrade.position
                 goal_kind = "upgrade_target"
                 goal_id = upgrade.building_id
             elif str(actor.actor_id) == builder_id and ctx.state.day >= 2 and inv["wallfixer"] > 0:
-                damaged = sorted((
-                    b for b in ctx.state.buildings
-                    if b.owner == "self" and b.building_type == "wall" and b.max_hp and b.hp is not None
-                    and b.hp / max(1, b.max_hp) < fixer_threshold
-                ), key=lambda b: (b.hp / max(1, b.max_hp or 1), str(b.building_id)))
-                if damaged:
-                    target = damaged[0].position
+                damaged = wall_fixer_target(ctx.state, actor, ctx.policy_state)
+                if damaged is not None:
+                    target = damaged.position
                     goal_kind = "wall_repair"
-                    goal_id = str(damaged[0].building_id)
+                    goal_id = str(damaged.building_id)
             if target is None or is_adjacent8(actor.position, target):
                 continue
             access = tuple(sorted(traversability.interaction_access_cells(target), key=lambda p:(p.x,p.y)))
@@ -335,7 +344,7 @@ class UseTargetApproachCandidateGenerator(CandidateGenerator):
 
 
 class WeaponBuildApproachCandidateGenerator(CandidateGenerator):
-    """前三座武器未完成时，让主建设者主动返回武器施工圈。"""
+    """三座互补武器未完成时，让主建设者主动返回武器施工圈。"""
 
     generator_id = "weapon_build_approach"
     tags = frozenset({"build", "prepare"})
@@ -357,7 +366,7 @@ class WeaponBuildApproachCandidateGenerator(CandidateGenerator):
         cluster = rocket_cluster_plan(ctx.state)
         if cluster is None:
             return ()
-        # Approach 与 BuildCandidate 必须共享完全相同的三 Rocket 固定目标，
+        # Approach 与 BuildCandidate 必须共享完全相同的三武器固定目标，
         # 否则 Worker 可能走向一个普通 weapon-ring cell，到了以后却无塔可建。
         targets = [
             Position(x, y) for x, y in cluster.rocket_cells
@@ -497,6 +506,11 @@ class BaseReturnCandidateGenerator(CandidateGenerator):
         for actor in ctx.state.characters:
             if actor.hp <= 0:
                 continue
+            if actor.role == "pioneer" and ctx.state.phase_task.strip():
+                # Once accepted, keep the Pioneer anchored so the task session
+                # can finish. Night combat may still override this via the
+                # higher-priority defense strategy when enemies are present.
+                continue
             if actor.role == "pioneer" and plan is not None:
                 controller = Position(*plan.controller)
                 if actor.position == controller:
@@ -536,7 +550,7 @@ class BaseReturnCandidateGenerator(CandidateGenerator):
 
 
 class DefensePostCandidateGenerator(CandidateGenerator):
-    """夜间仅把 Pioneer 送到三 Rocket 的公共控制点。
+    """夜间仅把 Pioneer 送到三武器布局的公共控制点。
 
     Worker 不再被拉去抢武器控制位；它们由 NightResourceApproach / Retreat
     决定是否在地图边缘安全采矿。Pioneer 的 Safe A* 会避开机器人未来进攻走廊。
@@ -579,4 +593,3 @@ class DefensePostCandidateGenerator(CandidateGenerator):
             goal_id="rocket_cluster_controller",
             goal_x=controller.x, goal_y=controller.y,
         ),)
-

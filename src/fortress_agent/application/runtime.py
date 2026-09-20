@@ -47,6 +47,7 @@ from fortress_agent.memory.strategic import StrategicMemory
 from fortress_agent.memory.feedback import RuntimeFeedbackMemory
 from fortress_agent.memory.economy import MiningRuntimeMemory
 from fortress_agent.memory.robot_trajectory import RobotTrajectoryMemory
+from fortress_agent.memory.movement import MovementHistoryMemory
 from fortress_agent.config.tuning import RuntimeLearningConfig
 from fortress_agent.policy.build_catalog import BuildCatalog
 from fortress_agent.game_rules.build_area import BuildAreaPolicy
@@ -180,6 +181,7 @@ class FortressAgentRuntime:
         self._task_session = task_session or TaskSessionCoordinator()
         self._mining_memory = MiningRuntimeMemory()
         self._robot_trajectory = RobotTrajectoryMemory(max_points=4)
+        self._movement_history = MovementHistoryMemory(max_positions=8)
         self._next_learning_update_round = max(1, int(self._runtime_learning_config.first_update_round))
         self._round_policy_updates: list[dict[str, object]] = []
 
@@ -238,6 +240,7 @@ class FortressAgentRuntime:
         # history before policy evaluation so night Safe A* can combine the
         # theoretical station route with the robot's actual recent heading.
         self._robot_trajectory.observe(state)
+        self._movement_history.observe(state)
         correlation_id = (
             f"r{state.round_id}:attempt:{self._turn_sequence}"
         )
@@ -518,6 +521,7 @@ class FortressAgentRuntime:
             correlation_id=correlation_id,
             mining_memory=self._mining_memory.view(),
             robot_trajectory=self._robot_trajectory.view(),
+            movement_history=self._movement_history.view(),
         )
 
         # PolicyGraph 是可审计的控制平面。Graph 内部会在节点之间主动
@@ -1542,6 +1546,7 @@ class FortressAgentRuntime:
             deadline=Deadline(0.01), strategic_memory=self._strategic_memory.view(),
             feedback_memory=self._feedback_memory.view(), mining_memory=self._mining_memory.view(),
             robot_trajectory=self._robot_trajectory.view(),
+            movement_history=self._movement_history.view(),
         )
         distance = max(abs(actor.position.x-resource.x), abs(actor.position.y-resource.y))
         _, _, formula = resource_selection_score(ctx, actor, resource, distance=distance)

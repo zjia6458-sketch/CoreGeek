@@ -8,7 +8,6 @@ from fortress_agent.domain.action import (
     ResourceApproachAction,
 )
 from fortress_agent.domain.reward import RewardBreakdown
-from fortress_agent.domain.state import Position
 from fortress_agent.game_rules.geometry import chebyshev_distance
 from fortress_agent.game_rules.combat import estimate_attack_value
 from fortress_agent.game_rules.economy import (
@@ -56,7 +55,11 @@ class MoveRewardModel(ExpectedRewardModel):
 
         position = 0.0
         revisit_penalty = min(0.75, 0.08 * float(target.visit_count))
-        action_cost = 0.10 + revisit_penalty
+        backtrack = (
+            ctx.movement_history.backtrack_penalty(action.actor_id, action.x, action.y)
+            if ctx.movement_history is not None else 0.0
+        )
+        action_cost = 0.10 + revisit_penalty + backtrack
         risk = threat.value(action.x, action.y) * 0.02
 
         total = position - action_cost - risk
@@ -94,7 +97,11 @@ class ResourceApproachRewardModel(ExpectedRewardModel):
         position = 0.75 if remaining == 1 else 0.25
         threat, _ = self._threat_builder.build(ctx.state)
         risk = threat.value(action.x, action.y) * 0.02
-        action_cost = 0.10
+        backtrack = (
+            ctx.movement_history.backtrack_penalty(action.actor_id, action.x, action.y)
+            if ctx.movement_history is not None else 0.0
+        )
+        action_cost = 0.10 + backtrack
         total = economy + position - risk - action_cost
 
         return RewardBreakdown(
@@ -161,7 +168,11 @@ class ExplorationRewardModel(ExpectedRewardModel):
             action,
         )
 
-        action_cost = 0.15
+        backtrack = (
+            ctx.movement_history.backtrack_penalty(action.actor_id, action.x, action.y)
+            if ctx.movement_history is not None else 0.0
+        )
+        action_cost = 0.15 + backtrack
         risk = threat.value(action.x, action.y) * 0.03
 
         total = (
@@ -333,4 +344,3 @@ class AttackRewardModel(ExpectedRewardModel):
             action_cost=action_cost,
             total=total,
         )
-

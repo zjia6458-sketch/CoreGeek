@@ -54,7 +54,10 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
     weapons = _own(state, set(WEAPON_TYPES))
     station = _own(state, {"station"})
     walls = _own(state, {"wall"})
-    if len(weapons) < 3 or not wall_blueprint_complete(state):
+    # Core facilities may be upgraded as soon as the three weapon slots are
+    # filled. Requiring every wall first can deadlock progression when stone is
+    # scarce; only wall upgrades remain gated by a complete wall blueprint.
+    if len(weapons) < 3:
         return None
 
     target = _first_level(weapons, 1)
@@ -72,6 +75,9 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
     if station and int(station[0].level or 1) == 2:
         b = station[0]
         return UpgradeTarget("StationUpgradeVoucher2", str(b.building_id), b.position, "station_to_3")
+
+    if not wall_blueprint_complete(state):
+        return None
 
     front_cells = _front_wall_cells(state)
     front_walls = [b for b in walls if (b.position.x, b.position.y) in front_cells]

@@ -4,6 +4,7 @@ from fortress_agent.domain.action import (
     AcceptTaskAction,
     BuildAction,
     BuyAction,
+    RemoveAction,
     SellAction,
     SubmitAnswerAction,
     SummonTreasureAction,
@@ -15,8 +16,8 @@ from fortress_agent.game_rules.catalog import DEFAULT_FIRST_WEAPON_TYPE, WEAPON_
 from fortress_agent.game_rules.geometry import is_adjacent8
 from fortress_agent.game_rules.build_area import wall_build_priority, weapon_build_priority
 from fortress_agent.game_rules.economy import wall_construction_due, wall_return_urgent
+from fortress_agent.game_rules.economy import wall_health_ratio
 from fortress_agent.game_rules.upgrades import next_upgrade_target
-from fortress_agent.policy.context import PolicyContext
 
 from .base import ExpectedRewardModel
 
@@ -54,6 +55,30 @@ class SellRewardModel(ExpectedRewardModel):
             economy=economy,
             action_cost=action_cost,
             total=economy - action_cost,
+        )
+
+
+class RemoveRewardModel(ExpectedRewardModel):
+    model_id = "remove_wall"
+
+    def supports(self, action):
+        return type(action) is RemoveAction
+
+    def estimate(self, ctx, action):
+        wall = next((
+            b for b in ctx.state.buildings
+            if b.owner == "self" and b.building_type == "wall"
+            and b.position == action.target
+        ), None)
+        if wall is None:
+            return RewardBreakdown(risk=1000.0, total=-1000.0)
+        missing = 1.0 - wall_health_ratio(wall)
+        survival = 7.0 + 8.0 * missing
+        action_cost = 0.10
+        return RewardBreakdown(
+            survival=survival,
+            action_cost=action_cost,
+            total=survival - action_cost,
         )
 
 
@@ -372,7 +397,7 @@ class BuildRewardModel(ExpectedRewardModel):
 
         action_cost = (sum(recipe.required_items.values()) * 0.25) + (recipe.gold_cost * 0.05)
 
-        # 开局固定分工：最低 ID Worker 是主建设者；前三座武器优先 Rocket。
+        # 开局固定分工：最低 ID Worker 是主建设者；第一座武器优先 Rocket。
         # 第二 Worker 保留给采矿，避免两名 Worker 一起追逐 build utility。
         if action.name.lower() in WEAPON_TYPES and existing_weapon_count < 3:
             if action.name.lower() == DEFAULT_FIRST_WEAPON_TYPE:

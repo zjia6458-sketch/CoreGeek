@@ -48,6 +48,22 @@ def weapon_count(state) -> int:
     return sum(1 for b in state.buildings if b.owner == "self" and b.building_type in WEAPON_TYPES)
 
 
+def next_weapon_build_type(state) -> str | None:
+    """Build a complementary three-weapon defense instead of three Rockets."""
+    own = [
+        b.building_type for b in state.buildings
+        if b.owner == "self" and b.building_type in WEAPON_TYPES
+    ]
+    if len(own) >= 3:
+        return None
+    for name in ("rocket", "gatling", "railgun"):
+        if name not in own:
+            return name
+    # Legacy states may already contain duplicates. Fill the last slot with the
+    # least represented type rather than refusing all further construction.
+    return min(("rocket", "gatling", "railgun"), key=lambda name: (own.count(name), name))
+
+
 def inventory_counts(actor) -> Counter[str]:
     return Counter({item.item_type.lower(): item.amount for item in actor.inventory})
 
@@ -71,6 +87,21 @@ def mineral_inventory_ratio(actor) -> float:
     if not actor.backpack_capacity:
         return 0.0
     return mineral_inventory_amount(actor) / max(1, actor.backpack_capacity)
+
+
+def nonstone_inventory_amount(actor) -> int:
+    """Return immediately sellable construction-independent minerals."""
+    inv = inventory_counts(actor)
+    return inv["iron"] + inv["copper"]
+
+
+def nonstone_cash_out_due(state, actor, policy_state) -> bool:
+    """Whether a Worker should pause mining and convert ore to gold."""
+    amount = nonstone_inventory_amount(actor)
+    if amount <= 0:
+        return False
+    batch = max(1, int(_threshold(policy_state, "nonstone_sell_batch_size")))
+    return amount >= batch or backpack_high_watermark_reached(actor, policy_state)
 
 
 def day_elapsed_rounds(state) -> int:
@@ -206,6 +237,39 @@ def sellable_amount(state, actor, mineral: str) -> int:
     return amount
 
 
+def wall_health_ratio(wall) -> float:
+    if not wall.max_hp or wall.hp is None:
+        return 1.0
+    return max(0.0, min(1.0, wall.hp / max(1, wall.max_hp)))
+
+
+def wall_rebuild_target(state, actor, policy_state):
+    """Lowest-health wall worth replacing, when the Worker carries stone."""
+    if inventory_counts(actor)["stone"] <= 0:
+        return None
+    threshold = _threshold(policy_state, "wall_rebuild_hp_ratio")
+    candidates = [
+        b for b in state.buildings
+        if b.owner == "self" and b.building_type == "wall"
+        and wall_health_ratio(b) < threshold
+    ]
+    return min(candidates, key=lambda b: (wall_health_ratio(b), str(b.building_id)), default=None)
+
+
+def wall_fixer_target(state, actor, policy_state):
+    """Lowest damaged wall not better handled by an available rebuild."""
+    fixer = _threshold(policy_state, "wall_fixer_hp_ratio")
+    rebuild = _threshold(policy_state, "wall_rebuild_hp_ratio")
+    has_rebuild_stone = inventory_counts(actor)["stone"] > 0
+    candidates = [
+        b for b in state.buildings
+        if b.owner == "self" and b.building_type == "wall"
+        and wall_health_ratio(b) < fixer
+        and (not has_rebuild_stone or wall_health_ratio(b) >= rebuild)
+    ]
+    return min(candidates, key=lambda b: (wall_health_ratio(b), str(b.building_id)), default=None)
+
+
 def adjacent_available_resources(ctx, actor):
     return tuple(
         resource
@@ -227,6 +291,11 @@ def should_hold_current_mine(ctx, actor) -> bool:
     if not resources:
         return False
     if actor.backpack_capacity and backpack_used(actor) >= actor.backpack_capacity:
+        return False
+    if (
+        nonstone_cash_out_due(ctx.state, actor, ctx.policy_state)
+        and any(zone.zone_type == "vendor" for zone in ctx.state.neutral_zones)
+    ):
         return False
     if near_night_mineral_return_due(ctx.state, actor, ctx.policy_state):
         return False

@@ -19,6 +19,8 @@ DEFAULT_THRESHOLDS: Mapping[str, float] = MappingProxyType({
     "early_day_full_backpack_rounds": 30.0,
     # 一般情况下背包使用率达到该值后，不再开启新的远距离采矿行程。
     "backpack_high_watermark_ratio": 0.80,
+    # 非石材达到该批量后优先去 Vendor 变现，避免只采不卖。
+    "nonstone_sell_batch_size": 4.0,
     # 进入 wall_build_reserve 窗口后，矿物占背包达到该比例就应返场施工/变现。
     "near_night_mineral_return_ratio": 0.35,
     # 正常 stone 运输批量；避免采 1 块就往返一次。
@@ -36,7 +38,7 @@ DEFAULT_THRESHOLDS: Mapping[str, float] = MappingProxyType({
     "wall_target_max": 16.0,
     # 资源目标至少保持若干回合，除非目标消失、不可达或夜间安全条件失效。
     "resource_commitment_min_rounds": 4.0,
-    # 夜间只考虑地图边缘带中的矿点。
+    # 地图边缘带用于选择夜间撤离安全区；矿点本身不必位于边缘。
     "night_edge_mining_margin_cells": 5.0,
     # 机器人预测未来多少回合。
     "night_robot_prediction_horizon": 12.0,
@@ -53,7 +55,8 @@ DEFAULT_THRESHOLDS: Mapping[str, float] = MappingProxyType({
     "night_resource_min_safe_hold_rounds": 3.0,
     # 角色低于 30% 生命进入治疗恢复。
     "character_medicine_hp_ratio": 0.30,
-    # Day2+ 墙低于该血量比例时优先使用 WallFixer。
+    # 有 stone 时，极低血墙优先拆除重建；中度损伤才购买 WallFixer。
+    "wall_rebuild_hp_ratio": 0.35,
     "wall_fixer_hp_ratio": 0.50,
 })
 
@@ -95,7 +98,7 @@ DEFAULT_STRATEGY_PARAMETERS: Mapping[str, float] = MappingProxyType({
     "strategy_prepare_activation_score": 1.0,
     "strategy_prepare_activation_priority": 900.0,
     "strategy_active_task_activation_score": 1.0,
-    "strategy_active_task_activation_priority": 850.0,
+    "strategy_active_task_activation_priority": 950.0,
     "strategy_day_default_activation_score": 0.10,
     "strategy_day_default_activation_priority": 100.0,
 

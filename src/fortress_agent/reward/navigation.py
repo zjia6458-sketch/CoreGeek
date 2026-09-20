@@ -23,7 +23,11 @@ class GoalApproachRewardModel(ExpectedRewardModel):
         remaining = chebyshev_distance((action.x, action.y), (action.goal_x, action.goal_y))
         risk_map, _ = self._threat.build(ctx.state)
         risk = risk_map.value(action.x, action.y) * 0.02
-        action_cost = 0.10
+        backtrack = (
+            ctx.movement_history.backtrack_penalty(action.actor_id, action.x, action.y)
+            if ctx.movement_history is not None else 0.0
+        )
+        action_cost = 0.10 + backtrack
 
         if action.goal_kind == "task":
             task = next((t for t in ctx.state.tasks if str(t.task_id) == action.goal_id), None)
@@ -68,6 +72,12 @@ class GoalApproachRewardModel(ExpectedRewardModel):
         if action.goal_kind == "wall_repair":
             survival = 8.0
             position = 2.5 / max(1.0, float(remaining))
+            total = survival + position - action_cost - risk
+            return RewardBreakdown(survival=survival, position=position, risk=risk, action_cost=action_cost, total=total)
+
+        if action.goal_kind == "wall_rebuild":
+            survival = 9.0
+            position = 3.0 / max(1.0, float(remaining))
             total = survival + position - action_cost - risk
             return RewardBreakdown(survival=survival, position=position, risk=risk, action_cost=action_cost, total=total)
 

@@ -8,6 +8,7 @@ from fortress_agent.domain.action import (
     AcceptTaskAction,
     BuildAction,
     BuyAction,
+    RemoveAction,
     SellAction,
     SubmitAnswerAction,
     SummonTreasureAction,
@@ -16,14 +17,19 @@ from fortress_agent.domain.action import (
 from fortress_agent.domain.state import Position
 from fortress_agent.game_rules.catalog import WEAPON_TYPES, KNOWN_WEAPON_SHOP_PRICES
 from fortress_agent.game_rules.upgrades import next_upgrade_target
-from fortress_agent.game_rules.economy import primary_builder_id
+from fortress_agent.game_rules.economy import (
+    next_weapon_build_type,
+    primary_builder_id,
+    wall_fixer_target,
+    wall_rebuild_target,
+)
 from fortress_agent.game_rules.build_area import (
     BuildAreaPolicy, DEFAULT_BUILD_AREA_POLICY, rocket_cluster_plan,
     ordered_wall_build_cells, wall_blueprint_complete,
 )
 from fortress_agent.game_rules.geometry import is_adjacent8, neighbors8
 from fortress_agent.game_rules.economy import sellable_amount
-from fortress_agent.game_rules.tasks import available_task_zone_positions
+from fortress_agent.game_rules.tasks import available_task_zone_positions, task_zone_positions_for_task
 from fortress_agent.policy.build_catalog import BuildCatalog
 from fortress_agent.policy.context import PolicyContext
 from fortress_agent.world.traversability import TraversabilityMap
@@ -61,7 +67,6 @@ class SellCandidateGenerator(CandidateGenerator):
         for actor in ctx.state.characters:
             if not _near_any(actor, vendors):
                 continue
-            inventory = _inventory(actor)
             for mineral in sorted(ctx.state.market_prices):
                 amount = sellable_amount(ctx.state, actor, mineral)
                 if amount <= 0:
@@ -75,6 +80,32 @@ class SellCandidateGenerator(CandidateGenerator):
                     num=amount,
                 ))
         return tuple(actions)
+
+
+class RemoveCandidateGenerator(CandidateGenerator):
+    """Replace a critically damaged wall when stone is already available."""
+
+    generator_id = "remove_wall"
+    tags = frozenset({"build", "prepare", "use"})
+
+    def generate(self, ctx, strategy):
+        if ctx.state.phase != "day":
+            return ()
+        builder_id = primary_builder_id(ctx.state)
+        actor = next((
+            a for a in ctx.state.characters
+            if str(a.actor_id) == builder_id and a.hp > 0
+        ), None)
+        if actor is None:
+            return ()
+        target = wall_rebuild_target(ctx.state, actor, ctx.policy_state)
+        if target is None or not is_adjacent8(actor.position, target.position):
+            return ()
+        return (RemoveAction(
+            actor_id=actor.actor_id,
+            action_type="remove",
+            target=target.position,
+        ),)
 
 
 class BuyCandidateGenerator(CandidateGenerator):
@@ -112,13 +143,7 @@ class BuyCandidateGenerator(CandidateGenerator):
 
             # Day2+ one Worker maintains seriously damaged walls.
             if str(actor.actor_id) == builder_id and ctx.state.day >= 2:
-                fixer_ratio = float(ctx.policy_state.thresholds.get("wall_fixer_hp_ratio", 0.50))
-                damaged = any(
-                    b.owner == "self" and b.building_type == "wall"
-                    and b.max_hp and b.hp is not None
-                    and b.hp / max(1, b.max_hp) < fixer_ratio
-                    for b in ctx.state.buildings
-                )
+                damaged = wall_fixer_target(ctx.state, actor, ctx.policy_state) is not None
                 if damaged and inventory["wallfixer"] <= 0:
                     desired.append("WallFixer")
 
@@ -159,7 +184,6 @@ class UseCandidateGenerator(CandidateGenerator):
         builder_id = primary_builder_id(ctx.state)
         upgrade = next_upgrade_target(ctx.state)
         medicine_threshold = float(ctx.policy_state.thresholds.get("character_medicine_hp_ratio", 0.30))
-        fixer_threshold = float(ctx.policy_state.thresholds.get("wall_fixer_hp_ratio", 0.50))
 
         for actor in ctx.state.characters:
             inventory = _inventory(actor)
@@ -173,12 +197,9 @@ class UseCandidateGenerator(CandidateGenerator):
                 ))
 
             if str(actor.actor_id) == builder_id and ctx.state.day >= 2 and inventory["wallfixer"] > 0:
-                wall = next((
-                    b for b in buildings
-                    if b.building_type == "wall" and b.max_hp and b.hp is not None
-                    and b.hp / max(1, b.max_hp) < fixer_threshold
-                    and is_adjacent8(actor.position, b.position)
-                ), None)
+                wall = wall_fixer_target(ctx.state, actor, ctx.policy_state)
+                if wall is not None and not is_adjacent8(actor.position, wall.position):
+                    wall = None
                 if wall is not None:
                     actions.append(UseAction(
                         actor_id=actor.actor_id, action_type="use",
@@ -210,21 +231,32 @@ class AcceptTaskCandidateGenerator(CandidateGenerator):
             return ()
         if ctx.state.phase == "night" and any(enemy.hp > 0 for enemy in ctx.state.enemies):
             return ()
-        # 自进化任务要求 Pioneer 全程留在 TaskPoint 邻域。临近夜晚才领取会
-        # 与全队回收/生存产生直接冲突，因此保守地不给最后 15 个白天回合开新任务。
-        if (
-            ctx.state.phase == "day"
-            and ctx.state.turns_until_phase_change is not None
-            and ctx.state.turns_until_phase_change < 15
-        ):
-            return ()
+        # 自进化任务要求 Pioneer 全程留在 TaskPoint 邻域。按任务 timeout
+        # 预留完成窗口，避免“刚接取就进入 prepare/夜晚”的必败会话。
         valid_task_zones = available_task_zone_positions(ctx.state)
         actions = []
         for actor in ctx.state.characters:
             if actor.role != "pioneer":
                 continue
-            if valid_task_zones and _near_any(actor, valid_task_zones):
-                actions.append(AcceptTaskAction(actor_id=actor.actor_id, action_type="acceptTask"))
+            nearby_tasks = [
+                task for task in ctx.state.tasks
+                if task.status == "available"
+                and _near_any(actor, task_zone_positions_for_task(ctx.state, task))
+            ]
+            if not nearby_tasks or not valid_task_zones:
+                continue
+            task_windows = [
+                min(30, int(task.timeout_rounds))
+                for task in nearby_tasks if task.timeout_rounds
+            ]
+            required_window = max(15, max(task_windows, default=15))
+            if (
+                ctx.state.phase == "day"
+                and ctx.state.turns_until_phase_change is not None
+                and ctx.state.turns_until_phase_change <= required_window
+            ):
+                continue
+            actions.append(AcceptTaskAction(actor_id=actor.actor_id, action_type="acceptTask"))
         return tuple(actions)
 
 
@@ -334,6 +366,7 @@ class BuildCandidateGenerator(CandidateGenerator):
         primary_builder_id = str(alive_workers[0].actor_id) if alive_workers else None
         cluster = rocket_cluster_plan(ctx.state)
         cluster_cells = set(cluster.rocket_cells) if cluster is not None else set()
+        desired_weapon_type = next_weapon_build_type(ctx.state)
         explicit_wall_cells = tuple(sorted(getattr(self._build_area_policy, "wall_cells", ()) or ()))
         wall_order = (
             explicit_wall_cells
@@ -354,13 +387,12 @@ class BuildCandidateGenerator(CandidateGenerator):
             for recipe in recipes:
                 name = recipe.building_name.lower()
 
-                # Opening Doctrine: one fixed Worker builds exactly three
-                # clustered Rockets. No Gatling/Railgun candidate is exposed
-                # before the cluster is complete.
+                # Fill the three clustered weapon slots with complementary
+                # Rocket/Gatling/Railgun capabilities instead of three Rockets.
                 if name in WEAPON_TYPES:
                     if len(existing_weapons) >= 3:
                         continue
-                    if name != "rocket":
+                    if name != desired_weapon_type:
                         continue
                     if primary_builder_id is None or str(worker.actor_id) != primary_builder_id:
                         continue
@@ -397,12 +429,11 @@ class BuildCandidateGenerator(CandidateGenerator):
                     ):
                         continue
                     if name in WEAPON_TYPES:
-                        replacing_weapon = existing is not None and existing.building_type in WEAPON_TYPES
-                        if len(existing_weapons) >= 3 and not replacing_weapon:
+                        # During initial composition, never overwrite an
+                        # existing weapon: fill an empty slot first.
+                        if existing is not None:
                             continue
-                        if existing is not None and not replacing_weapon:
-                            continue
-                        if existing is None and not traversability.is_walkable(x, y):
+                        if not traversability.is_walkable(x, y):
                             continue
                     elif name == "wall":
                         if existing is not None or not traversability.is_walkable(x, y):
@@ -416,4 +447,3 @@ class BuildCandidateGenerator(CandidateGenerator):
                         target=Position(x, y),
                     ))
         return tuple(actions)
-

@@ -26,6 +26,7 @@ from fortress_agent.candidates.business import (
     AcceptTaskCandidateGenerator,
     BuildCandidateGenerator,
     BuyCandidateGenerator,
+    RemoveCandidateGenerator,
     SellCandidateGenerator,
     SubmitAnswerCandidateGenerator,
     SummonTreasureCandidateGenerator,
@@ -46,6 +47,7 @@ from fortress_agent.evaluators.business import (
     AcceptTaskEvaluator,
     BuildEvaluator,
     BuyEvaluator,
+    RemoveEvaluator,
     SellEvaluator,
     SubmitAnswerEvaluator,
     TreasureEvaluator,
@@ -84,6 +86,7 @@ from fortress_agent.reward.business import (
     AcceptTaskRewardModel,
     BuildRewardModel,
     BuyRewardModel,
+    RemoveRewardModel,
     SellRewardModel,
     SubmitAnswerRewardModel,
     TreasureRewardModel,
@@ -218,6 +221,7 @@ def build_basic_policy_runtime(
     reward_models.register(ExplorationRewardModel())
     reward_models.register(GatherRewardModel())
     reward_models.register(SellRewardModel())
+    reward_models.register(RemoveRewardModel())
     reward_models.register(BuyRewardModel())
     reward_models.register(UseRewardModel())
     reward_models.register(AcceptTaskRewardModel())
@@ -250,6 +254,9 @@ def build_basic_policy_runtime(
     )
     evaluators.register(
         SellEvaluator(reward_models, composer)
+    )
+    evaluators.register(
+        RemoveEvaluator(reward_models, composer)
     )
     evaluators.register(
         BuyEvaluator(reward_models, composer)
@@ -299,6 +306,7 @@ def build_basic_policy_runtime(
     candidates.register(ExplorationCandidateGenerator())
     candidates.register(GatherCandidateGenerator())
     candidates.register(SellCandidateGenerator())
+    candidates.register(RemoveCandidateGenerator())
     candidates.register(BuyCandidateGenerator())
     candidates.register(UseCandidateGenerator())
     candidates.register(

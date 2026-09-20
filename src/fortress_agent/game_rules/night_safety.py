@@ -76,9 +76,6 @@ def night_resource_route(ctx, actor, resource) -> NightResourceRoute | None:
         hp_ratio = actor.hp / max(1, actor.max_hp)
         if hp_ratio < _threshold(ctx, "night_worker_min_hp_ratio", 0.55):
             return None
-    if not is_edge_resource(ctx, resource):
-        return None
-
     traversability = TraversabilityMap.from_state_and_memory(
         ctx.state, ctx.world_memory, ctx.feedback_memory
     )
@@ -147,8 +144,6 @@ def night_gather_is_safe(ctx, actor, resource) -> bool:
     """Check one stationary collect turn plus post-collect escape feasibility."""
     if ctx.state.phase.lower() != "night":
         return True
-    if not is_edge_resource(ctx, resource):
-        return False
     field = threat_field(ctx)
     max_resource_risk = _parameter(ctx, "night_resource_max_risk", 0.35)
     if field.risk(actor.position, 1) > max_resource_risk:

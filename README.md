@@ -1,9 +1,9 @@
 
 ## V0.5.8 Team Doctrine / Safe Navigation
 
-V0.5.8 将长期职责从零散 Utility 竞争提升为稳定 Doctrine：主建设者完成三座共享控制点的 Rocket cluster；第二 Worker 开局优先最近 stone；三面墙 16/16 完成后双 Worker 切换高价值矿→出售→升级循环；Pioneer 白天任务、夜前回公共 Rocket 控制点、夜战后继续任务。
+当前 Doctrine 由主建设者依次完成 Rocket/Gatling/Railgun 共享控制区；第二 Worker 开局优先最近 stone；非 stone 达到批量后进入出售循环，核心设施不再等待全部围墙完成才升级；Pioneer 已接任务时保持锚定，夜战后继续任务。
 
-夜间 Worker 使用基于 ``RobotThreatField`` 的时间感知 Safe A*，同时考虑机器人朝 Station 的保守进攻线与最近真实运动方向；夜间矿必须通过安全去程、最小安全驻留窗口和安全撤离验证。文本类自进化任务 Prompt 使用中文主导流程，并可通过 ``todo(TEXT_TASK_PROMPT)`` 快速定位修改入口。详见 ``SAFE_NAVIGATION_WALL_DOCTRINE_V0.5.8.md`` 与 ``TEXT_TASK_PROMPT_OPTIMIZATION_V0.5.8.md``。
+夜间 Worker 使用基于 ``RobotThreatField`` 的时间感知 Safe A*，同时考虑机器人朝 Station 的保守进攻线与最近真实运动方向；任意位置的夜间矿都必须通过安全去程、最小安全驻留窗口和安全撤离验证。文本类自进化任务 Prompt 使用中文主导流程，并可通过 ``todo(TEXT_TASK_PROMPT)`` 快速定位修改入口。详见 ``SAFE_NAVIGATION_WALL_DOCTRINE_V0.5.8.md`` 与 ``TEXT_TASK_PROMPT_OPTIMIZATION_V0.5.8.md``。
 
 # FortressAgent V0.5.4 — Task Skill + Combat Ballistics + Economy/Construction Loop
 
@@ -26,7 +26,7 @@ V0.5.8 将长期职责从零散 Utility 竞争提升为稳定 Doctrine：主建�
 
 - 自进化任务新增 `TaskSessionCoordinator`，形成 `acceptTask -> task prompt / executeCmd -> lastCmdResult -> submitAnswer` 跨回合闭环；
 - 夜间新增 `DefensePostCandidateGenerator`，角色会先回武器控制位；TeamPlanner 空结果不再吞掉 PolicyGraph Emergency/control decision；
-- 开局固定轻量角色分工：最低 ID Worker 负责前三座 Rocket，另一个 Worker 不抢开局武器预算并优先采矿；三座武器后提高 stone/Wall 的战略价值；
+- 开局固定轻量角色分工：最低 ID Worker 依次负责 Rocket/Gatling/Railgun，另一个 Worker 不抢开局武器预算并优先采矿；三座武器后提高 stone/Wall 的战略价值；
 - TeamPlanner 在联合移动冲突后会尝试该角色第二/第三候选，不再因为第一候选冲突直接让角色空闲；
 - 默认 `prepare_margin=20`，白天结束前 20 回合开始全员回收；
 - compact stdout 新增一回合一屏的人类摘要，并显示 PolicyGraph node chain、Gold/Score、最终动作、TaskStage、ExecCmd/LastCmdResult。

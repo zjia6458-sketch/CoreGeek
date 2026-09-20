@@ -11,6 +11,7 @@ from fortress_agent.memory.feedback import RuntimeFeedbackMemoryView
 from fortress_agent.memory.world import WorldMemoryView
 from fortress_agent.memory.economy import MiningRuntimeMemoryView
 from fortress_agent.memory.robot_trajectory import RobotTrajectoryMemoryView
+from fortress_agent.memory.movement import MovementHistoryView
 from fortress_agent.safety.deadline import DeadlineView
 
 
@@ -28,3 +29,4 @@ class PolicyContext:
     correlation_id: str | None = None
     mining_memory: MiningRuntimeMemoryView | None = None
     robot_trajectory: RobotTrajectoryMemoryView | None = None
+    movement_history: MovementHistoryView | None = None
