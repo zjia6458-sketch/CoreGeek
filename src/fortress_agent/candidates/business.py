@@ -387,8 +387,7 @@ class BuildCandidateGenerator(CandidateGenerator):
             for recipe in recipes:
                 name = recipe.building_name.lower()
 
-                # Fill the three clustered weapon slots with complementary
-                # Rocket/Gatling/Railgun capabilities instead of three Rockets.
+                # Fill the three clustered slots with early-game Rockets.
                 if name in WEAPON_TYPES:
                     if len(existing_weapons) >= 3:
                         continue
@@ -400,6 +399,12 @@ class BuildCandidateGenerator(CandidateGenerator):
                         continue
 
                 if name == "wall":
+                    # Standard opening builds its weapon force before walls.
+                    # Explicit wall-only catalogs remain usable for custom maps.
+                    if len(existing_weapons) < 3 and any(
+                        r.building_name.lower() in WEAPON_TYPES for r in recipes
+                    ):
+                        continue
                     if (not explicit_wall_cells and wall_blueprint_complete(ctx.state)) or not allowed_wall_targets:
                         continue
                     if len(existing_walls) >= 20:

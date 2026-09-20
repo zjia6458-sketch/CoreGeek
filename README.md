@@ -1,7 +1,7 @@
 
 ## V0.5.8 Team Doctrine / Safe Navigation
 
-当前 Doctrine 由主建设者依次完成 Rocket/Gatling/Railgun 共享控制区；第二 Worker 开局优先最近 stone；非 stone 达到批量后进入出售循环，核心设施不再等待全部围墙完成才升级；Pioneer 已接任务时保持锚定，夜战后继续任务。
+当前策略详见 [当前策略检查表](CURRENT_STRATEGY.md)。主建设者开局优先补满 3 座 Rocket，金币足够时优先建造并保护建塔预算；满数量后优先升级武器与迎敌侧墙（左侧基地优先右墙，右侧基地优先左墙），上下墙升级靠后。第二 Worker 开局优先最近 stone；非 stone 达到批量后进入出售循环；Pioneer 已接任务时保持锚定，夜战后继续任务。
 
 夜间 Worker 使用基于 ``RobotThreatField`` 的时间感知 Safe A*，同时考虑机器人朝 Station 的保守进攻线与最近真实运动方向；任意位置的夜间矿都必须通过安全去程、最小安全驻留窗口和安全撤离验证。文本类自进化任务 Prompt 使用中文主导流程，并可通过 ``todo(TEXT_TASK_PROMPT)`` 快速定位修改入口。详见 ``SAFE_NAVIGATION_WALL_DOCTRINE_V0.5.8.md`` 与 ``TEXT_TASK_PROMPT_OPTIMIZATION_V0.5.8.md``。
 

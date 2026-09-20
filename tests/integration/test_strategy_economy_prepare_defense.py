@@ -1,6 +1,8 @@
 import asyncio
 import json
 
+import pytest
+
 from fortress_agent.application.bootstrap import build_runtime
 
 
@@ -202,3 +204,36 @@ def test_prepare_mode_starts_with_twenty_day_turns_remaining():
     # All three roles are now eligible to start returning instead of continuing exploration.
     assert response["roleCommandMap"]
     assert all(command["action"] == "move" for command in response["roleCommandMap"].values())
+
+
+@pytest.mark.parametrize("existing", [(), ("rocket",), ("rocket", "rocket"), ("gatling", "railgun")])
+def test_opening_fills_empty_slots_with_rockets_before_using_upgrade_voucher(existing):
+    payload = base_payload(10, gold=25, roles=[
+        character(10010, 7, 21, "worker", ["WeaponUpgradeVoucher1", "stone"]),
+        building(10013, 9, 22, "station"),
+        *[building(10040 + i, 8, 22 - i, name) for i, name in enumerate(existing)],
+    ])
+    result = asyncio.run(build_runtime().handle_turn(payload))
+    assert result.ok
+    command = json.loads(result.response_json)["roleCommandMap"]["10010"]
+    assert command["action"] == "build"
+    assert command["name"] == "rocket"
+    target = command["targetPos"][0]
+    assert (target["x"], target["y"]) not in {(8, 22 - i) for i in range(len(existing))}
+
+
+@pytest.mark.parametrize("base_x,base_y,wall_x", [(9, 22, 12), (30, 8, 28)])
+def test_front_wall_voucher_used_before_station_and_other_walls(base_x, base_y, wall_x):
+    payload = base_payload(10, gold=300, roles=[
+        character(10010, wall_x, base_y - 1, "worker",
+                  ["WallUpgradeVoucher1", "StationUpgradeVoucher1", "WeaponUpgradeVoucher2"]),
+        building(10013, base_x, base_y, "station"),
+        *[{**building(10040 + i, base_x - 1, base_y - i, "rocket"), "level": 2} for i in range(3)],
+        building(10100, wall_x, base_y, "wall"),
+    ])
+    result = asyncio.run(build_runtime().handle_turn(payload))
+    assert result.ok
+    command = json.loads(result.response_json)["roleCommandMap"]["10010"]
+    assert command["action"] == "use"
+    assert command["name"] == "WallUpgradeVoucher1"
+    assert command["targetPos"] == [{"x": wall_x, "y": base_y}]

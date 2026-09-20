@@ -344,7 +344,7 @@ class UseTargetApproachCandidateGenerator(CandidateGenerator):
 
 
 class WeaponBuildApproachCandidateGenerator(CandidateGenerator):
-    """三座互补武器未完成时，让主建设者主动返回武器施工圈。"""
+    """三座武器未完成时，让主建设者主动返回火箭塔施工圈。"""
 
     generator_id = "weapon_build_approach"
     tags = frozenset({"build", "prepare"})

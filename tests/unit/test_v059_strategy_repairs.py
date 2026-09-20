@@ -1,16 +1,39 @@
-from types import MappingProxyType
+from dataclasses import replace
+from types import MappingProxyType, SimpleNamespace
 
-from fortress_agent.candidates.basic import GatherCandidateGenerator, ResourceApproachCandidateGenerator
-from fortress_agent.candidates.business import BuildCandidateGenerator, RemoveCandidateGenerator
-from fortress_agent.candidates.navigation import VendorApproachCandidateGenerator, WeaponShopApproachCandidateGenerator
+import pytest
+
+from fortress_agent.candidates.basic import (
+    GatherCandidateGenerator,
+    ResourceApproachCandidateGenerator,
+)
+from fortress_agent.candidates.business import (
+    BuildCandidateGenerator,
+    RemoveCandidateGenerator,
+)
+from fortress_agent.candidates.navigation import (
+    VendorApproachCandidateGenerator,
+    WeaponShopApproachCandidateGenerator,
+)
+from fortress_agent.domain.action import (
+    BuildAction,
+    BuyAction,
+    GatherAction,
+    GoalApproachAction,
+)
+from fortress_agent.domain.decision import Decision
 from fortress_agent.domain.policy_state import PolicyState
 from fortress_agent.domain.state import Position
+from fortress_agent.domain.utility import UtilityBreakdown
+from fortress_agent.game_rules.build_area import wall_blueprint_cells
 from fortress_agent.game_rules.night_safety import night_gather_is_safe
 from fortress_agent.game_rules.upgrades import next_upgrade_target
 from fortress_agent.memory.movement import MovementHistoryMemory
 from fortress_agent.memory.world import WorldMemory
 from fortress_agent.policy.context import PolicyContext
+from fortress_agent.policy.ranker import RewardAwareRanker
 from fortress_agent.policy.strategy import StrategyProfile
+from fortress_agent.policy.team_constraints import GoldBudgetConstraint
 from fortress_agent.protocol.codec import GameProtocolCodec
 from fortress_agent.strategies.reference import build_reference_strategy_selector
 from fortress_agent.world.pathfinding import AStarPathfinder
@@ -128,7 +151,7 @@ def test_critical_lowest_wall_is_removed_for_stone_rebuild():
     assert actions[0].target == Position(9, 20)
 
 
-def test_weapon_plan_builds_gatling_after_first_rocket():
+def test_weapon_plan_builds_another_rocket_after_first_rocket():
     game = state(
         roles=[
             role(10, 7, 21, "worker"),
@@ -139,7 +162,7 @@ def test_weapon_plan_builds_gatling_after_first_rocket():
     )
     actions = BuildCandidateGenerator().generate(context(game), profile("build"))
     assert actions
-    assert {action.name for action in actions} == {"gatling"}
+    assert {action.name for action in actions} == {"rocket"}
     assert all(action.target != Position(8, 22) for action in actions)
 
 
@@ -211,3 +234,82 @@ def test_movement_history_penalizes_immediate_backtracking():
         memory.observe(state(roles=[role(10, x, 1, "worker")]))
     assert memory.view().backtrack_penalty(10, 2, 1) == 4.0
     assert memory.view().backtrack_penalty(10, 2, 0) == 0.0
+
+
+@pytest.mark.parametrize("count", [0, 1, 2])
+def test_no_upgrade_or_wall_build_before_three_weapons(count):
+    game = state(roles=[
+        role(10, 11, 21, "worker", backpack=["stone", "WeaponUpgradeVoucher1"]),
+        role(13, 9, 22, "station", health=1500),
+        *[role(40 + i, 8, 22 - i, "rocket") for i in range(count)],
+    ], gold=200)
+    assert next_upgrade_target(game) is None
+    actions = BuildCandidateGenerator().generate(context(game), profile("build"))
+    assert not any(a.name == "wall" for a in actions)
+
+
+@pytest.mark.parametrize("gold,round_no,count", [(24, 10, 0), (100, 71, 0), (100, 10, 3)])
+def test_tower_priority_does_not_bypass_gold_night_or_count_limits(gold, round_no, count):
+    game = state(round_no=round_no, gold=gold, roles=[
+        role(10, 7, 21, "worker"), role(13, 9, 22, "station", health=1500),
+        *[role(40 + i, 8, 22 - i, "rocket") for i in range(count)],
+    ])
+    assert BuildCandidateGenerator().generate(context(game), profile("build")) == ()
+
+
+@pytest.mark.parametrize("base_x,base_y,front", [(9, 22, "right"), (30, 8, "left")])
+def test_complete_upgrade_sequence_prioritizes_weapons_and_front_wall(base_x, base_y, front):
+    game = state(roles=[
+        role(13, base_x, base_y, "station", health=1500),
+        *[role(40 + i, base_x - 1, base_y - i, "rocket") for i in range(3)],
+    ])
+    cells = wall_blueprint_cells(game)
+    front_x = (max if front == "right" else min)(x for x, _ in cells)
+    front_pos = next((x, y) for x, y in sorted(cells) if x == front_x)
+    other_pos = next((x, y) for x, y in sorted(cells) if x != front_x)
+    front_wall = replace(game.buildings[0], building_id=100, building_type="wall", position=Position(*front_pos))
+    other_wall = replace(front_wall, building_id=101, position=Position(*other_pos))
+    game = replace(game, buildings=(*game.buildings, front_wall, other_wall))
+    # Only two walls exist: the other fourteen must not block upgrading.
+    stages = []
+    while (target := next_upgrade_target(game)) is not None:
+        stages.append(target.stage)
+        game = replace(game, buildings=tuple(
+            replace(b, level=int(b.level or 1) + 1)
+            if str(b.building_id) == target.building_id else b
+            for b in game.buildings
+        ))
+        assert len(stages) <= 12
+    assert stages == [
+        *["weapons_to_2"] * 3, "front_walls_to_2",
+        *["weapons_to_3"] * 3, "front_walls_to_3",
+        "station_to_2", "station_to_3", "other_walls_to_2", "other_walls_to_3",
+    ]
+
+
+def test_opening_build_and_approach_outrank_arbitrarily_high_mining_utility():
+    ctx = context(state(roles=[role(10, 7, 21, "worker")], gold=25))
+    build = BuildAction(10, "build", "rocket", Position(8, 21))
+    approach = GoalApproachAction(10, "move", 7, 22, "weapon_build", "weapon", 8, 22)
+    gather = GatherAction(10, "gather", "mine")
+    evaluator = SimpleNamespace(evaluate=lambda ctx, action, strategy: UtilityBreakdown(
+        total=100000 if action == gather else 0,
+    ))
+    ranker = RewardAwareRanker(SimpleNamespace(resolve=lambda action: evaluator))
+    ranked = ranker.rank_all(ctx, (gather, approach, build), profile("build", "gather"))
+    assert [a for a, _ in ranked] == [build, approach, gather]
+
+
+@pytest.mark.parametrize("travel", [False, True])
+@pytest.mark.parametrize("gold,can_buy", [(25, False), (34, False), (35, True)])
+def test_opening_budget_protects_tower_from_other_actor_purchase(travel, gold, can_buy):
+    ctx = context(state(roles=[role(10, 7, 21, "worker")], gold=gold,
+                        shop=[{"name": "Medicine", "price": 10}]))
+    action = (GoalApproachAction(10, "move", 7, 22, "weapon_build", "weapon", 8, 22)
+              if travel else BuildAction(10, "build", "rocket", Position(8, 21)))
+    build = Decision(action=action, strategy_id="test", utility=UtilityBreakdown(total=0))
+    buy = Decision(action=BuyAction(11, "buy", "Medicine"), strategy_id="test",
+                   utility=UtilityBreakdown(total=100000))
+    result = GoldBudgetConstraint().apply(ctx, (buy, build))
+    assert build in result.decisions
+    assert (buy in result.decisions) == can_buy

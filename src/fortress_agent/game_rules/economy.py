@@ -9,7 +9,7 @@ from collections import Counter
 import math
 
 from fortress_agent.config.tuning import DEFAULT_PARAMETERS, DEFAULT_THRESHOLDS
-from fortress_agent.game_rules.catalog import WEAPON_TYPES
+from fortress_agent.game_rules.catalog import DEFAULT_FIRST_WEAPON_TYPE, WEAPON_TYPES
 from fortress_agent.game_rules.constants import DAY_TURNS, WALL_LIMIT
 from fortress_agent.game_rules.build_area import (
     wall_blueprint_cells, wall_blueprint_missing_count, wall_blueprint_complete,
@@ -49,19 +49,11 @@ def weapon_count(state) -> int:
 
 
 def next_weapon_build_type(state) -> str | None:
-    """Build a complementary three-weapon defense instead of three Rockets."""
-    own = [
-        b.building_type for b in state.buildings
-        if b.owner == "self" and b.building_type in WEAPON_TYPES
-    ]
-    if len(own) >= 3:
-        return None
-    for name in ("rocket", "gatling", "railgun"):
-        if name not in own:
-            return name
-    # Legacy states may already contain duplicates. Fill the last slot with the
-    # least represented type rather than refusing all further construction.
-    return min(("rocket", "gatling", "railgun"), key=lambda name: (own.count(name), name))
+    """Fill three weapon slots with early-game Rockets before upgrading.
+
+    Existing mixed defenses count toward the target and are never replaced.
+    """
+    return DEFAULT_FIRST_WEAPON_TYPE if weapon_count(state) < 3 else None
 
 
 def inventory_counts(actor) -> Counter[str]:
@@ -214,7 +206,7 @@ def stone_batch_target(state, actor, policy_state=None) -> int:
 def reserved_stone(state, actor) -> int:
     """三面墙 Blueprint 未完成时，stone 始终作为战略材料保留。
 
-    Worker-2 从开局就采 stone；即使 Worker-1 尚未完成三种互补武器，也不应把
+    Worker-2 从开局就采 stone；即使 Worker-1 尚未完成三座火箭塔，也不应把
     这些石头提前卖掉，否则会破坏“建塔完成后立即落墙”的长期职责。
     """
     blueprint = wall_blueprint_cells(state)

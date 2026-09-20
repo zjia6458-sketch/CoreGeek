@@ -5,7 +5,8 @@ from dataclasses import dataclass
 
 from fortress_agent.domain.state import BuildingState, Position
 from fortress_agent.game_rules.build_area import (
-    station_front_side, wall_blueprint_cells, wall_blueprint_complete,
+    station_front_side,
+    wall_blueprint_cells,
 )
 from fortress_agent.game_rules.catalog import WEAPON_TYPES
 
@@ -43,12 +44,12 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
     """Apply the frozen upgrade sequence from the team doctrine.
 
     1. all weapons -> L2
-    2. Station -> L2
+    2. existing front-side walls -> L2
     3. all weapons -> L3
-    4. Station -> L3
-    5. front-side walls -> L2
-    6. top/bottom walls -> L2
-    7. front-side walls -> L3
+    4. existing front-side walls -> L3
+    5. Station -> L2
+    6. Station -> L3
+    7. top/bottom walls -> L2
     8. top/bottom walls -> L3
     """
     weapons = _own(state, set(WEAPON_TYPES))
@@ -56,28 +57,13 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
     walls = _own(state, {"wall"})
     # Core facilities may be upgraded as soon as the three weapon slots are
     # filled. Requiring every wall first can deadlock progression when stone is
-    # scarce; only wall upgrades remain gated by a complete wall blueprint.
+    # scarce. Existing front walls also upgrade without waiting for other sides.
     if len(weapons) < 3:
         return None
 
     target = _first_level(weapons, 1)
     if target is not None:
         return UpgradeTarget("WeaponUpgradeVoucher1", str(target.building_id), target.position, "weapons_to_2")
-
-    if station and int(station[0].level or 1) == 1:
-        b = station[0]
-        return UpgradeTarget("StationUpgradeVoucher1", str(b.building_id), b.position, "station_to_2")
-
-    target = _first_level(weapons, 2)
-    if target is not None:
-        return UpgradeTarget("WeaponUpgradeVoucher2", str(target.building_id), target.position, "weapons_to_3")
-
-    if station and int(station[0].level or 1) == 2:
-        b = station[0]
-        return UpgradeTarget("StationUpgradeVoucher2", str(b.building_id), b.position, "station_to_3")
-
-    if not wall_blueprint_complete(state):
-        return None
 
     front_cells = _front_wall_cells(state)
     front_walls = [b for b in walls if (b.position.x, b.position.y) in front_cells]
@@ -86,12 +72,25 @@ def next_upgrade_target(state) -> UpgradeTarget | None:
     target = _first_level(front_walls, 1)
     if target is not None:
         return UpgradeTarget("WallUpgradeVoucher1", str(target.building_id), target.position, "front_walls_to_2")
-    target = _first_level(other_walls, 1)
+
+    target = _first_level(weapons, 2)
     if target is not None:
-        return UpgradeTarget("WallUpgradeVoucher1", str(target.building_id), target.position, "other_walls_to_2")
+        return UpgradeTarget("WeaponUpgradeVoucher2", str(target.building_id), target.position, "weapons_to_3")
+
     target = _first_level(front_walls, 2)
     if target is not None:
         return UpgradeTarget("WallUpgradeVoucher2", str(target.building_id), target.position, "front_walls_to_3")
+
+    if station and int(station[0].level or 1) == 1:
+        b = station[0]
+        return UpgradeTarget("StationUpgradeVoucher1", str(b.building_id), b.position, "station_to_2")
+    if station and int(station[0].level or 1) == 2:
+        b = station[0]
+        return UpgradeTarget("StationUpgradeVoucher2", str(b.building_id), b.position, "station_to_3")
+
+    target = _first_level(other_walls, 1)
+    if target is not None:
+        return UpgradeTarget("WallUpgradeVoucher1", str(target.building_id), target.position, "other_walls_to_2")
     target = _first_level(other_walls, 2)
     if target is not None:
         return UpgradeTarget("WallUpgradeVoucher2", str(target.building_id), target.position, "other_walls_to_3")

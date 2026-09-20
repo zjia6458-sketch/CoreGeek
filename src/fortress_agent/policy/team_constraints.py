@@ -17,7 +17,9 @@ from fortress_agent.domain.action import (
 )
 from fortress_agent.domain.decision import Decision
 from fortress_agent.policy.context import PolicyContext
+from fortress_agent.policy.construction_priority import opening_construction_priority
 from fortress_agent.game_rules.catalog import WEAPON_TYPES, building_rule
+from fortress_agent.game_rules.economy import next_weapon_build_type
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,12 +253,19 @@ class GoldBudgetConstraint(TeamConstraint):
         # Do not count same-round sells as spendable gold; action ordering is
         # undocumented. Allocate only gold already present in GameState.
         budget = float(ctx.state.gold_self)
+        # Keep one tower's gold while the builder travels to a legal build cell.
+        if any(opening_construction_priority(ctx.state, d.action) == 1 for d in decisions):
+            rule = building_rule(next_weapon_build_type(ctx.state))
+            if rule is not None:
+                budget = max(0.0, budget - rule.build_gold_cost)
 
         spenders = [*buys, *weapon_builds]
         selected = [decision for decision in decisions if decision not in spenders]
         dropped: list[str] = []
 
-        for decision in sorted(spenders, key=rank_key):
+        for decision in sorted(spenders, key=lambda d: (
+            -opening_construction_priority(ctx.state, d.action), rank_key(d),
+        )):
             action = decision.action
             if isinstance(action, BuildAction):
                 rule = building_rule(action.name)

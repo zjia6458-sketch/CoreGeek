@@ -1,5 +1,7 @@
 # FortressAgent V0.3.6 — Strategy Loop & Log Mode Repair
 
+> 本文件保留 V0.3.6 历史说明。当前建塔、金币保护、武器数量门槛及迎敌侧墙升级顺序请查看 [当前策略检查表](CURRENT_STRATEGY.md)（2026-09-21 更新）。下文“默认空 BuildCatalog”等历史描述不代表当前实现。
+
 ## 1. 修复目标
 
 本版本针对真实日志暴露的四个策略问题与日志膨胀问题：

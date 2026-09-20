@@ -374,8 +374,8 @@ def wall_build_priority(state: GameState, target: Position | Cell) -> float:
 class RocketClusterPlan:
     """Three weapon cells sharing one fixed controller cell.
 
-    The historical class name is retained for compatibility.  Current doctrine
-    fills these cells with Rocket, Gatling and Railgun rather than three Rockets.
+    Opening doctrine fills these cells with three Rockets. Existing mixed
+    defenses are retained and count toward the same three-slot target.
     """
 
     controller: Cell
