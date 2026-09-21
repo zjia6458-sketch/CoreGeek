@@ -379,12 +379,15 @@ class NightResourceApproachCandidateGenerator(CandidateGenerator):
                 else None
             )
             committed_safe = False
+            committed_route = None
             if committed_id is not None:
                 current = next((
                     r for r in ctx.world_memory.available_resources()
                     if str(r.resource_id) == committed_id
                 ), None)
-                committed_safe = current is not None and night_resource_route(ctx, actor, current) is not None
+                if current is not None:
+                    committed_route = night_resource_route(ctx, actor, current)
+                committed_safe = committed_route is not None
 
             candidates = []
             for resource in ctx.world_memory.available_resources():
@@ -397,7 +400,10 @@ class NightResourceApproachCandidateGenerator(CandidateGenerator):
                 if is_adjacent8(actor.position, (resource.x, resource.y)):
                     # GatherCandidate handles the stationary action.
                     continue
-                route = night_resource_route(ctx, actor, resource)
+                # Reuse even a failed result within this immutable context;
+                # recomputing can exhaust the deadline and lose a valid route.
+                route = (committed_route if str(resource.resource_id) == committed_id
+                         else night_resource_route(ctx, actor, resource))
                 if route is None or route.path.steps < 1:
                     continue
                 distance = route.path.steps

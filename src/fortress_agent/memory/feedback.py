@@ -249,6 +249,13 @@ class RuntimeFeedbackMemoryView:
             and rule.property_value == "impassable"
         )
 
+    def move_retry_blocked_cells(self, current_round: int) -> frozenset[tuple[int, int]]:
+        """Transient team-wide obstacles; never promote these to terrain rules."""
+        return frozenset(
+            cell for cell, until in self._memory._failed_move_until.items()
+            if int(current_round) <= until
+        )
+
     def impassable_terrain_types(self) -> tuple[str, ...]:
         return tuple(
             rule.terrain_type

@@ -292,3 +292,42 @@ def test_worker_mines_at_night_then_retreats_when_robot_approaches():
     assert command["action"] == "move"
     target = command["targetPos"][0]
     assert max(abs(target["x"] - 7), abs(target["y"] - 2)) > 5
+
+
+@pytest.mark.parametrize("round_no", [10, 71])
+def test_runtime_reroutes_after_server_rejects_mining_move(round_no):
+    runtime = build_runtime()
+    payload = base_payload(round_no, gold=0, roles=[character(10010, 5, 5, "worker")],
+        zones=[{"neutralType": "iron", "pos": {"x": 10, "y": 5}}])
+    first = asyncio.run(runtime.handle_turn(payload))
+    assert first.ok
+    command = json.loads(first.response_json)["roleCommandMap"]["10010"]
+    assert command["action"] == "move"
+    failed_target = command["targetPos"]
+    payload["roundNo"] += 1
+    payload["lastRoundRoleActionResults"] = {"10010": False}
+    second = asyncio.run(runtime.handle_turn(payload))
+    assert second.ok
+    command = json.loads(second.response_json)["roleCommandMap"]["10010"]
+    assert command["action"] == "move"
+    assert command["targetPos"] != failed_target
+
+
+def test_runtime_uses_upgrade_voucher_after_confirmed_mining_turn():
+    runtime = build_runtime()
+    payload = base_payload(10, gold=0, roles=[
+        character(10010, 9, 10, "worker"),
+        *[building(10040 + i, 10 + i, 10, "rocket") for i in range(3)],
+    ], zones=[{"neutralType": "iron", "pos": {"x": 9, "y": 11}}])
+    first = asyncio.run(runtime.handle_turn(payload))
+    assert first.ok
+    assert json.loads(first.response_json)["roleCommandMap"]["10010"]["action"] == "collect"
+    payload["roundNo"] = 11
+    payload["lastRoundRoleActionResults"] = {"10010": True}
+    payload["teamOur"]["roles"][0]["backpack"] = ["iron", "WeaponUpgradeVoucher1"]
+    second = asyncio.run(runtime.handle_turn(payload))
+    assert second.ok
+    command = json.loads(second.response_json)["roleCommandMap"]["10010"]
+    assert command["action"] == "use"
+    assert command["name"] == "WeaponUpgradeVoucher1"
+    assert command["targetPos"] == [{"x": 10, "y": 10}]

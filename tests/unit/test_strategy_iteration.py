@@ -10,9 +10,18 @@ from fortress_agent.candidates.basic import (
     NightResourceApproachCandidateGenerator,
     ResourceApproachCandidateGenerator,
 )
-from fortress_agent.candidates.business import BuildCandidateGenerator
-from fortress_agent.candidates.navigation import VendorApproachCandidateGenerator
+from fortress_agent.candidates.business import (
+    BuildCandidateGenerator,
+    BuyCandidateGenerator,
+    UseCandidateGenerator,
+)
+from fortress_agent.candidates.navigation import (
+    UseTargetApproachCandidateGenerator,
+    VendorApproachCandidateGenerator,
+    WeaponShopApproachCandidateGenerator,
+)
 from fortress_agent.domain.action import (
+    GatherAction,
     MoveAction,
     ResourceApproachAction,
 )
@@ -37,9 +46,11 @@ from fortress_agent.game_rules.night_safety import (
 )
 from fortress_agent.game_rules.upgrades import next_upgrade_target
 from fortress_agent.memory.economy import MiningRuntimeMemory
+from fortress_agent.memory.feedback import RuntimeFeedbackMemory
 from fortress_agent.memory.world import WorldMemory
 from fortress_agent.policy.context import PolicyContext
 from fortress_agent.policy.legal import BasicLegalActionFilter
+from fortress_agent.policy.ranker import RewardAwareRanker
 from fortress_agent.policy.strategy import StrategyProfile
 from fortress_agent.protocol.final_validator import FinalResponseValidator
 from fortress_agent.protocol.server_factory import ServerCommandFactory
@@ -256,3 +267,105 @@ def test_one_controller_can_rotate_three_rockets_without_moving():
         actions = AttackCandidateGenerator().generate(ctx(state), PROFILE)
         assert actions and {a.actor_id for a in actions} == {40 + ready}
         assert {a.controller_id for a in actions} == {10}
+
+
+@pytest.mark.parametrize("phase", ["day", "night"])
+def test_mine_route_detours_around_failed_step_and_recovers_after_retry_expiry(phase):
+    state = game(phase=phase)
+    generator = (ResourceApproachCandidateGenerator() if phase == "day"
+                 else NightResourceApproachCandidateGenerator())
+    context = ctx(state, [("mine", "iron", 10, 5)])
+    first = generator.generate(context, PROFILE)[0]
+    feedback = RuntimeFeedbackMemory(generic_retry_ban_rounds=2)
+    failed_state = replace(state, round_id=11, last_round_role_action_results={"10": False})
+    feedback.observe(failed_state, previous_experiences=(SimpleNamespace(action=first),))
+    mining = MiningRuntimeMemory()
+    mining.record_confirmed_action(state=state, action=first, emergency_rounds=8)
+    context = replace(context, state=failed_state, feedback_memory=feedback.view(), mining_memory=mining.view())
+    for round_id in (11, 13):
+        current = replace(context, state=replace(failed_state, round_id=round_id))
+        actions = generator.generate(current, PROFILE)
+        assert actions and {a.resource_id for a in actions} == {"mine"}
+        assert all((a.x, a.y) != (first.x, first.y) for a in actions)
+        assert all(BasicLegalActionFilter().is_legal(current, a) for a in actions)
+    expired = replace(context, state=replace(failed_state, round_id=14))
+    assert generator.generate(expired, PROFILE)[0] == first
+    assert feedback.view().impassable_terrain_types() == ()
+
+
+def upgrade_context(*, held, near, cargo=(), gold=100):
+    towers = tuple(building(40 + i, "rocket", Position(10 + i, 10)) for i in range(3))
+    inventory = (*cargo, *((InventoryItem("WeaponUpgradeVoucher1", 1),) if held else ()))
+    pos = Position(9, 10) if held and near else Position(5, 5)
+    shop = Position(4, 5) if near else Position(1, 1)
+    state = replace(game(pos=pos, cargo=inventory, buildings=towers,
+        zones=(NeutralZoneState("weaponShop", shop), NeutralZoneState("vendor", Position(1, 5)))),
+        gold_self=gold, weapon_shop={"WeaponUpgradeVoucher1": 50})
+    mining = MiningRuntimeMemory()
+    mining.record_confirmed_action(state=state, action=GatherAction(10, "gather", "mine"), emergency_rounds=8)
+    return ctx(state, [("mine", "iron", pos.x, pos.y + 1)], mining)
+
+
+def ranked(context, actions):
+    # Mining has deliberately excessive learned reward: transaction order must win.
+    evaluator = SimpleNamespace(evaluate=lambda ctx, action, strategy:
+        SimpleNamespace(total=10000 if isinstance(action, GatherAction) else 1, risk=0))
+    return RewardAwareRanker(SimpleNamespace(resolve=lambda action: evaluator)).rank_all(context, actions, PROFILE)
+
+
+@pytest.mark.parametrize("held,near,generator", [
+    (False, False, WeaponShopApproachCandidateGenerator),
+    (False, True, BuyCandidateGenerator),
+    (True, False, UseTargetApproachCandidateGenerator),
+    (True, True, UseCandidateGenerator),
+])
+def test_planned_upgrade_transaction_precedes_committed_mining(held, near, generator):
+    context = upgrade_context(held=held, near=near)
+    upgrade_actions = generator().generate(context, PROFILE)
+    gather = GatherCandidateGenerator().generate(context, PROFILE)
+    assert upgrade_actions and gather
+    assert ranked(context, (*gather, *upgrade_actions))[0][0] in upgrade_actions
+
+
+def test_partial_vendor_session_finishes_before_upgrade_trip():
+    context = upgrade_context(held=True, near=False, cargo=(InventoryItem("iron", 1),))
+    mining = MiningRuntimeMemory()
+    loaded = replace(context.state, characters=(replace(context.state.characters[0],
+        inventory=(InventoryItem("iron", 4),)),))
+    vendor = VendorApproachCandidateGenerator().generate(replace(context, state=loaded), PROFILE)[0]
+    mining.record_confirmed_action(state=loaded, action=vendor, emergency_rounds=8)
+    context = replace(context, mining_memory=mining.view())
+    vendor_actions = VendorApproachCandidateGenerator().generate(context, PROFILE)
+    upgrades = UseTargetApproachCandidateGenerator().generate(context, PROFILE)
+    assert upgrades and vendor_actions
+    assert ranked(context, (*upgrades, *vendor_actions))[0][0] in vendor_actions
+
+
+def test_unaffordable_upgrade_keeps_mining_without_shop_trip():
+    context = upgrade_context(held=False, near=False, gold=49)
+    assert WeaponShopApproachCandidateGenerator().generate(context, PROFILE) == ()
+    assert GatherCandidateGenerator().generate(context, PROFILE)
+
+
+@pytest.mark.parametrize("safe", [True, False])
+def test_night_committed_route_is_searched_once_per_generation(monkeypatch, safe):
+    state = game(phase="night")
+    mining = MiningRuntimeMemory()
+    mining.record_confirmed_action(state=state,
+        action=ResourceApproachAction(10, "move", 6, 5, "mine"), emergency_rounds=8)
+    context = ctx(state, [("mine", "iron", 10, 5), ("other", "copper", 5, 10)], mining)
+    calls = []
+    route = night_resource_route(context, state.characters[0], context.world_memory.resource("mine"))
+    assert route is not None
+
+    def search(ctx, actor, resource):
+        calls.append(str(resource.resource_id))
+        if str(resource.resource_id) == "mine":
+            # A second expensive search may fail on the remaining deadline.
+            return route if safe and calls.count("mine") == 1 else None
+        return night_resource_route(ctx, actor, resource)
+
+    monkeypatch.setattr("fortress_agent.candidates.basic.night_resource_route", search)
+    actions = NightResourceApproachCandidateGenerator().generate(context, PROFILE)
+    assert actions and {a.resource_id for a in actions} == ({"mine"} if safe else {"other"})
+    assert calls.count("mine") == 1

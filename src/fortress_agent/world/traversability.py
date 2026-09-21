@@ -48,6 +48,7 @@ class TraversabilityMap:
     robot_cells: frozenset[tuple[int, int]]
     learned_terrain_types: frozenset[str]
     learned_terrain_cells: tuple[tuple[int, int, str], ...]
+    retry_blocked_cells: frozenset[tuple[int, int]] = frozenset()
 
     @classmethod
     def from_state(cls, state: GameState) -> "TraversabilityMap":
@@ -127,11 +128,13 @@ class TraversabilityMap:
         }
 
         learned_types: set[str] = set()
+        retry_cells: frozenset[tuple[int, int]] = frozenset()
         if feedback_memory is not None:
             learned_types = {
                 _norm(item)
                 for item in feedback_memory.impassable_terrain_types()
             }
+            retry_cells = feedback_memory.move_retry_blocked_cells(state.round_id)
 
         learned_cells_with_type = tuple(
             sorted(
@@ -155,6 +158,7 @@ class TraversabilityMap:
             | set(base.character_cells)
             | set(base.robot_cells)
             | learned_cells
+            | retry_cells
         )
 
         return cls(
@@ -169,6 +173,7 @@ class TraversabilityMap:
             robot_cells=base.robot_cells,
             learned_terrain_types=frozenset(learned_types),
             learned_terrain_cells=learned_cells_with_type,
+            retry_blocked_cells=retry_cells,
         )
 
     def inside(self, x: int, y: int) -> bool:
@@ -192,6 +197,8 @@ class TraversabilityMap:
     def block_reason(self, x: int, y: int) -> str | None:
         if not self.inside(x, y):
             return "out_of_map"
+        if (x, y) in self.retry_blocked_cells:
+            return "temporary_move_retry_ban"
         learned = self.learned_terrain_at(x, y)
         if learned is not None:
             return f"learned_impassable_terrain:{learned}"
